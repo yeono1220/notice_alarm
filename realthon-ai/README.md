@@ -49,3 +49,4 @@ All Kakao credentials, recipients, and board lists are hard-coded to match the o
 ## Scheduling
 
 Use Amazon EventBridge (CloudWatch Events) to run the Lambda on your preferred cadence. No additional infrastructure files are required in this repo.
+
