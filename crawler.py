@@ -8,8 +8,6 @@ import PIL.Image
 import os
 
 # [수정 전]
-# API_KEY = "AIzaSyDEYJtUQpD5sFSCfUieDyinP45C_tq_xbM"
-
 # [수정 후] 소스코드에는 키를 없애고, 환경변수에서 가져오도록 변경
 API_KEY = os.environ.get("GEMINI_API_KEY") 
 
