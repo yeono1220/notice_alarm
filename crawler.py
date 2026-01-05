@@ -1,11 +1,13 @@
 from google import genai
 from google.genai import types
 import PIL.Image
+from dotenv import load_dotenv
 
 # ---------------------------------------------------------
 # 1. API 키 설정 (본인의 키를 넣어주세요)
 # ---------------------------------------------------------
 import os
+load_dotenv()
 
 # [수정 전]
 # [수정 후] 소스코드에는 키를 없애고, 환경변수에서 가져오도록 변경

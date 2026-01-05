@@ -15,7 +15,7 @@ else:
     # 3. Gemini 실행
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-flash-lite-latest",
             contents="안녕! 나 이제 보안까지 철저하게 지키는 중이야."
         )
         print("\n--- Gemini의 답변 ---")

@@ -1,6 +1,5 @@
-google-genai
-playwright
-flask
-gunicorn
-firebase-admin
-pytz
+beautifulsoup4==4.12.3
+requests==2.32.3
+openai==1.53.0
+flask             <-- 추가됨
+gunicorn          <-- 추가됨
