@@ -1,0 +1,6 @@
+google-genai
+playwright
+flask
+gunicorn
+firebase-admin
+pytz
