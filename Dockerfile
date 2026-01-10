@@ -1,57 +1,18 @@
-FROM public.ecr.aws/lambda/python:3.11
+# 1. 일반 파이썬 이미지 사용 (AWS Lambda 이미지 X)
+FROM python:3.11-slim
 
-WORKDIR ${LAMBDA_TASK_ROOT}
+# 2. 작업 디렉토리 설정
+WORKDIR /app
 
-RUN yum install -y \
-    alsa-lib \
-    atk \
-    at-spi2-atk \
-    at-spi2-core \
-    curl \
-    cups-libs \
-    dbus-glib \
-    glib2 \
-    gtk3 \
-    libdrm \
-    libX11 \
-    libXcomposite \
-    libXcursor \
-    libXdamage \
-    libXext \
-    libXi \
-    libXfixes \
-    libXrandr \
-    libXrender \
-    libXScrnSaver \
-    libXtst \
-    libxcb \
-    libxkbcommon \
-    mesa-libEGL \
-    mesa-libgbm \
-    nss \
-    pango \
-    unzip \
-    xorg-x11-server-Xvfb \
- && yum clean all
-
+# 3. 필수 패키지 설치
+# requirements.txt에 있는 requests, beautifulsoup4, openai 등을 설치합니다.
 COPY requirements.txt .
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENV CHROME_VERSION=126.0.6478.182
-RUN curl -sSL https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip -o /tmp/chrome.zip \
-    && unzip /tmp/chrome.zip -d /opt/ \
-    && mv /opt/chrome-linux64 /opt/chrome \
-    && rm /tmp/chrome.zip
+# 4. 소스 코드 복사 (모든 Python 파일 및 프로필 데이터)
+COPY . .
 
-RUN curl -sSL https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip -o /tmp/chromedriver.zip \
-    && unzip /tmp/chromedriver.zip -d /opt/ \
-    && mv /opt/chromedriver-linux64/chromedriver /opt/chromedriver \
-    && chmod +x /opt/chromedriver \
-    && rm -rf /opt/chromedriver-linux64 /tmp/chromedriver.zip
-
-ENV LINKAREER_BROWSER_PATH=/opt/chrome/chrome
-ENV LINKAREER_CHROMEDRIVER_PATH=/opt/chromedriver
-
-COPY app ./app
-
-CMD ["app.router.lambda_handler"]
+# 5. 실행 명령어 변경
+# AWS Lambda Handler 대신 파이썬 스크립트를 직접 실행합니다.
+# (korea_uni.py 하단에 if __name__ == "__main__": 블록이 이미 존재하므로 바로 실행 가능)
+CMD ["python", "korea_uni.py"]
