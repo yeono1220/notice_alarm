@@ -103,7 +103,9 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
 # OpenAI 키도 필요하면 여기서 불러오기 (나중을 위해)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# app/jobs/korea_university.py 내 send_kakao 수정
 
+# app/jobs/korea_university.py 의 send_kakao 함수 수정
 def send_kakao(contact: str, template_code: str, template_param: dict[str, str]) -> dict[str, Any]:
     payload = {
         "senderKey": SENDER_KEY,
@@ -114,18 +116,19 @@ def send_kakao(contact: str, template_code: str, template_param: dict[str, str])
     url = f"https://api-alimtalk.cloud.toast.com/alimtalk/v2.2/appkeys/{APP_KEY}/messages"
     
     try:
+        # [수정] POST 요청이 먼저 와야 합니다.
         resp = session.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
+        # [수정] 그 후에 로그를 찍어야 NameError가 발생하지 않습니다.
+        LOG.info(f"Kakao API 응답 상태: {resp.status_code}")
+        LOG.info(f"Kakao API 응답 본문: {resp.text}")
         if resp.status_code != 200:
             LOG.error("Kakao send failed (%s) %s", resp.status_code, resp.text)
-            resp.raise_for_status()
-        if resp.headers.get("Content-Type", "").startswith("application/json"):
-            return resp.json()
-        return {"status": resp.status_code}
+            return {"error": "API_STATUS_ERROR", "status": resp.status_code}
+            
+        return resp.json() if "application/json" in resp.headers.get("Content-Type", "") else {"status": resp.status_code}
     except Exception as e:
         LOG.error("Kakao connection error: %s", e)
         return {"error": str(e)}
-
-
 def fetch_board(base_url: str, board: dict[str, str]) -> tuple[str, str]:
     page_url = f"{base_url}{board['category']}.do"
     resp = session.get(page_url, timeout=HTTP_TIMEOUT)
@@ -227,44 +230,27 @@ def process_board(board: dict[str, str], base_url: str, profile_text: str, recip
     return {"board": board["name"], "posts": aligned, "sent": sent, "evaluated": evaluated}
 
 
+# app/jobs/korea_university.py 의 run 함수 수정 제안
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     payload = event or {}
     profile_text = payload.get("user_profile")
     
-    # [참고] 로컬 실행 시 user_profile이 없으면 파일에서 읽어오도록 fallback 처리 가능
     if not profile_text:
-        # profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
-        # ... (기존 로직 유지) ...
-        pass
-
-    base_candidate = payload.get("base_url") or payload.get("url")
-    base_url = normalize_base(base_candidate)
-    
-    recipients = payload.get("recipients")
-    boards = payload.get("boards")
-    recipients = recipients if isinstance(recipients, list) and recipients else RECIPIENTS_DEFAULT
-    boards = boards if isinstance(boards, list) and boards else BOARDS_DEFAULT
-    
-    report = []
-    
-    # 프로필 텍스트가 꼭 필요하므로 체크
-    if not profile_text:
-        # 이벤트에 없으면 로컬 파일 시도 (Lambda 환경 고려)
         try:
             with open("user_profile.json", "r", encoding="utf-8") as f:
-                profile_text = f.read()
-        except:
-            pass
-            
+                # [수정] JSON 파싱을 시도하여 구조화된 데이터에서 핵심 요약(summary)을 추출합니다.
+                try:
+                    data = json.load(f)
+                    profile_text = data.get("summary") or data.get("profile") or str(data)
+                except json.JSONDecodeError:
+                    profile_text = f.read()
+        except Exception as e:
+            LOG.error(f"프로필 로드 실패: {e}")
+    # 2. 프로필이 여전히 없으면 에러 반환
     if not profile_text:
-        return {"error": "user_profile is required"}
-
-    for board in boards:
-        report.append(process_board(board, base_url, profile_text, recipients))
-        
-    total_posts = sum(len(entry["posts"]) for entry in report)
-    return {"totalPosts": total_posts, "boards": report}
-
+        return {"error": "user_profile is required and not found in file"}
+    
+    # ... (이하 동일한 로직)
 
 if __name__ == "__main__":
     profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
