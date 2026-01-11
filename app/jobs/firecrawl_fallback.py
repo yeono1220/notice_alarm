@@ -24,9 +24,9 @@ HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "3")) # 테스트를 위해 3일로 조정 (필요시 변경)
 
 # 카카오톡 설정
-SENDER_KEY = "1763d8030dde5f5f369ea0a088598c2fb4c792ab"
-SECRET_KEY = "PuyyHGNZ"
-APP_KEY = "LROcHEW7abBbFhzc"
+SENDER_KEY = os.getenv("KAKAO_SENDER_KEY")
+SECRET_KEY = os.getenv("KAKAO_SECRET_KEY")
+APP_KEY = os.getenv("KAKAO_APP_KEY")
 TEMPLATE_CODE = "send-article"
 
 # Gemini 설정
