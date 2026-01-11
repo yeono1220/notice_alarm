@@ -62,40 +62,75 @@ def normalize_base(url: str | None) -> str:
         trimmed = trimmed[: trimmed.rfind("/") + 1]
     return f"{trimmed.rstrip('/')}/"
 
+# [추가] AI 제공자를 환경변수에서 선택 (기본값: gemini)
+AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower() 
+# OpenAI 키도 필요하면 여기서 불러오기 (나중을 위해)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+def ask_ai(prompt: str) -> str:
+    """
+    이 함수는 'AI_PROVIDER' 변수에 따라 Gemini 또는 OpenAI를 골라서 질문을 던집니다.
+    나중에 OpenAI로 바꾸고 싶으면 환경변수 AI_PROVIDER를 'openai'로 바꾸면 됩니다.
+    """
+    try:
+        # 1. Gemini 사용 (기본)
+        if AI_PROVIDER == "gemini":
+            if not model: return "ERROR: Gemini Model Not Loaded"
+            response = model.generate_content(prompt)
+            return response.text.strip()
+            
+        # 2. OpenAI 사용 (나중에 키만 넣으면 바로 작동)
+        elif AI_PROVIDER == "openai":
+            if not OPENAI_API_KEY: return "ERROR: No OpenAI Key"
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "gpt-4o-mini", # 가성비 모델
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            resp = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()['choices'][0]['message']['content'].strip()
+            return f"ERROR: OpenAI Status {resp.status_code}"
+
+    except Exception as e:
+        LOG.error(f"AI 호출 중 에러 발생: {e}")
+        return "ERROR"
+    
+    return "ERROR: Unknown Provider"
 def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
-    """[변경] Gemini를 사용하여 공지사항 적합도 평가"""
+    """[수정됨] 직접 모델을 부르지 않고 ask_ai 함수를 사용"""
     if not profile_text:
         return False, "no-profile"
-    if not model:
-        return False, "gemini-disabled"
     
+    # 프롬프트 구성
     user_prompt = f"""
-Candidate profile text:
-{profile_text}
+    Candidate profile:
+    {profile_text}
 
-Notice title: {title}
-Notice link: {link}
+    Notice title: {title}
+    Notice link: {link}
 
-Does this notice strongly align with the candidate’s interests and background? Reply with exactly YES or NO.
-"""
-    try:
-        # [변경] Gemini API 호출
-        response = model.generate_content(user_prompt)
-        answer_text = response.text.strip().upper()
+    Analyze if this notice is HIGHLY RELEVANT to the candidate.
+    Respond with exactly 'YES' or 'NO'.
+    """
+    
+    # [핵심 변경] 여기서 ask_ai 함수를 호출합니다!
+    answer_text = ask_ai(user_prompt).upper()
+    
+    if "YES" in answer_text:
+        return True, "YES"
+    if "NO" in answer_text:
+        return False, "NO"
         
-        if answer_text.startswith("YES"):
-            return True, answer_text
-        if answer_text.startswith("NO"):
-            return False, answer_text
-            
-        LOG.warning("Gemini response not YES/NO: %s", answer_text)
-        return False, answer_text or "no-answer"
-
-    except Exception as exc:
-        LOG.error("Gemini scoring failed: %s", exc)
-        return False, "gemini-error"
-
+    # 에러나 모호한 답변 처리
+    if "ERROR" in answer_text:
+        return False, "ai-error"
+        
+    LOG.warning(f"AI 모호한 응답: {answer_text} -> (제목: {title})")
+    return False, "ambiguous"
 
 def send_kakao(contact: str, template_code: str, template_param: dict[str, str]) -> dict[str, Any]:
     payload = {

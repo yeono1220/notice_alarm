@@ -3,256 +3,245 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urljoin
 
 import requests
+from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
+import google.generativeai as genai
 
+# 로깅 설정
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
-LOG = logging.getLogger("firecrawl_fallback")
+LOG = logging.getLogger("korea_university_crawler")
 
-FIRECRAWL_API_URL = os.getenv("FIRECRAWL_API_URL", "https://api.firecrawl.dev/v2/scrape")
-FIRECRAWL_API_KEY = os.getenv(
-    "FIRECRAWL_API_KEY",
-    "fc-336503610b404829953273c9397bba11",
-)
+# 기본 설정
+BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
+TIMEZONE = ZoneInfo("Asia/Seoul")
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "3")) # 테스트를 위해 3일로 조정 (필요시 변경)
 
-OPENAI_MODEL = "gpt-5-nano-2025-08-07"
-OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "90"))
-
-HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "30"))
-
+# 카카오톡 설정
 SENDER_KEY = "1763d8030dde5f5f369ea0a088598c2fb4c792ab"
 SECRET_KEY = "PuyyHGNZ"
 APP_KEY = "LROcHEW7abBbFhzc"
 TEMPLATE_CODE = "send-article"
 
+# Gemini 설정
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Gemini 안전성 설정 (BLOCK_NONE으로 설정하여 거부 방지)
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings)
+else:
+    LOG.warning("⚠️ GEMINI_API_KEY가 없습니다. AI 판별 기능이 비활성화됩니다.")
+    model = None
+
+# 수신자 목록
 RECIPIENTS_DEFAULT = [
     {"name": "고려대 학부생 김수겸", "contact": "01068584123"},
     {"name": "고려대 학부생 고연오", "contact": "01026570090"},
 ]
 
+# 크롤링 대상 게시판
+BOARDS_DEFAULT = [
+    {"name": "학부공지", "category": "notice_under"},
+    {"name": "학부장학", "category": "scholarship_under"},
+    {"name": "정보대소식", "category": "news"},
+    {"name": "취업정보", "category": "course_job"},
+    {"name": "프로그램", "category": "course_program"},
+    {"name": "인턴십", "category": "course_intern"},
+    {"name": "공모전", "category": "course_competition"},
+]
+
 session = requests.Session()
-if not OPENAI_API_KEY:
-    LOG.warning("OPENAI_API_KEY missing; fallback alignment disabled")
 
-
-def scrape_markdown(url: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"url": url, "formats": ["markdown"]}
-    resp = session.post(FIRECRAWL_API_URL, headers=headers, json=payload, timeout=HTTP_TIMEOUT)
-    if resp.status_code != 200:
-        LOG.error("Firecrawl scrape failed (%s): %s", resp.status_code, resp.text[:500])
-        resp.raise_for_status()
-    data = resp.json()
-    markdown = (((data.get("data") or {}) if data else {}).get("markdown")) if data else None
-    if not markdown:
-        raise RuntimeError("Firecrawl returned no markdown")
-    return markdown
-
-
-def extract_posts(markdown: str) -> list[dict[str, str]]:
-    if not OPENAI_API_KEY:
-        return []
-    system_prompt = (
-        "You are a parser that extracts postings from markdown. "
-        "Return JSON array objects with 'title' and 'link'. "
-        "Ignore duplicates and skip entries without URLs."
-    )
-    user_prompt = (
-        "Extract posting title and link pairs from the markdown below.\n"
-        "Respond with JSON only.\n\n"
-        f"{markdown}"
-    )
-    try:
-        resp = session.post(
-            OPENAI_API_URL,
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=OPENAI_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.RequestException as exc:
-        LOG.error("OpenAI extraction failed: %s", exc)
-        return []
-    except ValueError:
-        LOG.error("OpenAI extraction invalid JSON")
-        return []
-
-    content = ""
-    for choice in data.get("choices", []):
-        message = choice.get("message") or {}
-        if message.get("content"):
-            content = message["content"]
-            break
-    if not content:
-        return []
-    try:
-        posts = json.loads(content)
-        if isinstance(posts, list):
-            cleaned = []
-            for item in posts:
-                if not isinstance(item, dict):
-                    continue
-                title = (item.get("title") or "").strip()
-                link = (item.get("link") or "").strip()
-                if title and link:
-                    cleaned.append({"title": title, "link": link})
-            return cleaned
-    except json.JSONDecodeError:
-        LOG.error("OpenAI extraction response not JSON: %s", content[:200])
-    return []
-
+def normalize_base(url: str | None) -> str:
+    if not url:
+        return BASE_URL_DEFAULT
+    trimmed = url.strip()
+    if trimmed.endswith(".do"):
+        trimmed = trimmed[: trimmed.rfind("/") + 1]
+    return f"{trimmed.rstrip('/')}/"
 
 def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
+    """Gemini를 사용하여 공지사항 적합도 평가"""
     if not profile_text:
         return False, "no-profile"
-    if not OPENAI_API_KEY:
-        return False, "openai-disabled"
-    prompt = f"""
-Candidate profile text:
-{profile_text}
+    if not model:
+        return False, "gemini-disabled"
+    
+    user_prompt = f"""
+    Candidate profile:
+    {profile_text}
 
-Posting title: {title}
-Posting link: {link}
+    Notice title: {title}
+    Notice link: {link}
 
-Does this posting strongly align with the candidate’s interests? Reply with exactly YES or NO.
-"""
+    Analyze if this notice is HIGHLY RELEVANT to the candidate.
+    Respond with exactly 'YES' or 'NO'.
+    """
     try:
-        resp = session.post(
-            OPENAI_API_URL,
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": "Respond only YES or NO."},
-                    {"role": "user", "content": prompt},
-                ],
-            },
-            timeout=OPENAI_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.HTTPError as exc:
-        body = exc.response.text if getattr(exc, "response", None) else ""
-        code = exc.response.status_code if getattr(exc, "response", None) else "no-status"
-        LOG.error("OpenAI scoring failed (%s): %s", code, body[:300])
-        return False, "openai-error"
-    except requests.RequestException as exc:
-        LOG.error("OpenAI scoring failed: %s", exc)
-        return False, "openai-error"
-    except ValueError:
-        LOG.error("OpenAI scoring invalid JSON")
-        return False, "openai-invalid-response"
+        response = model.generate_content(user_prompt)
+        answer_text = response.text.strip().upper()
+        
+        if "YES" in answer_text:
+            return True, "YES"
+        if "NO" in answer_text:
+            return False, "NO"
+            
+        LOG.warning(f"Gemini 모호한 응답: {answer_text} -> (제목: {title})")
+        return False, "ambiguous"
 
-    answer = ""
-    for choice in data.get("choices", []):
-        msg = choice.get("message") or {}
-        if msg.get("content"):
-            answer = msg["content"]
-            break
-    text = (answer or "").strip().upper()
-    if text.startswith("YES"):
-        return True, text or "YES"
-    if text.startswith("NO"):
-        return False, text or "NO"
-    LOG.warning("OpenAI scoring unexpected answer: %s", text)
-    return False, text or "no-answer"
+    except Exception as exc:
+        LOG.error(f"Gemini 호출 에러 (제목: {title}): {exc}")
+        return False, "gemini-error"
 
-
-def send_kakao(contact: str, template_code: str, params: dict[str, str]) -> dict[str, Any]:
+def send_kakao(contact: str, template_code: str, template_param: dict[str, str]) -> dict[str, Any]:
     payload = {
         "senderKey": SENDER_KEY,
         "templateCode": template_code,
-        "recipientList": [{"recipientNo": contact, "templateParameter": params}],
+        "recipientList": [{"recipientNo": contact, "templateParameter": template_param}],
     }
     headers = {"X-Secret-Key": SECRET_KEY, "Content-Type": "application/json;charset=UTF-8"}
     url = f"https://api-alimtalk.cloud.toast.com/alimtalk/v2.2/appkeys/{APP_KEY}/messages"
-    resp = session.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
-    if resp.status_code != 200:
-        LOG.error("Kakao send failed (%s) %s", resp.status_code, resp.text)
-        resp.raise_for_status()
-    if resp.headers.get("Content-Type", "").startswith("application/json"):
+    
+    try:
+        resp = session.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
+        if resp.status_code != 200:
+            LOG.error(f"카카오 전송 실패: {resp.status_code} {resp.text}")
+            return {"status": resp.status_code, "error": resp.text}
         return resp.json()
-    return {"status": resp.status_code}
+    except Exception as e:
+        LOG.error(f"카카오 연결 에러: {e}")
+        return {"error": str(e)}
 
+def fetch_board(base_url: str, board: dict[str, str]) -> tuple[str, str]:
+    page_url = f"{base_url}{board['category']}.do"
+    resp = session.get(page_url, timeout=HTTP_TIMEOUT)
+    resp.raise_for_status()
+    return page_url, resp.text
 
-def notify(posts: list[dict[str, Any]], recipients: list[dict[str, str]]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for post in posts:
-        title = f"[Firecrawl] {post['title']}"
+def parse_posts(html: str, page_url: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    today = datetime.now(TIMEZONE).date()
+    cutoff = today - timedelta(days=LOOKBACK_DAYS) # 오늘 포함 과거 N일까지
+    posts: list[dict[str, str]] = []
+    
+    for row in soup.select("tr"):
+        cells = row.find_all("td")
+        if not cells: continue
+        
+        # 날짜 파싱 (YYYY.MM.DD)
+        date_text = cells[-1].get_text(strip=True)
+        try:
+            row_date = datetime.strptime(date_text, "%Y.%m.%d").date()
+        except ValueError:
+            continue
+            
+        if row_date < cutoff:
+            continue # 날짜 지난 것은 패스
+            
+        link_tag = row.select_one("a.article-title")
+        if not link_tag: continue
+            
+        href = (link_tag.get("href") or "").replace("amp;", "")
+        title = link_tag.get_text(strip=True)
+        posts.append({"title": title, "link": urljoin(page_url, href)})
+        
+    return posts
+
+def process_board(board: dict[str, str], base_url: str, profile_text: str, recipients: list[dict[str, str]]) -> dict[str, Any]:
+    try:
+        page_url, html = fetch_board(base_url, board)
+        posts = parse_posts(html, page_url)
+        
+        aligned_posts = []
+        evaluated_log = []
+        
+        LOG.info(f"[{board['name']}] 감지된 최신 글: {len(posts)}개")
+
+        for post in posts:
+            decision, reason = score_notice(profile_text, post["title"], post["link"])
+            evaluated_log.append({"title": post["title"], "decision": decision, "reason": reason})
+            
+            if decision:
+                aligned_posts.append(post)
+                
+    except Exception as exc:
+        LOG.exception(f"[{board['name']}] 처리 중 에러: {exc}")
+        return {"board": board["name"], "error": str(exc), "sent_count": 0}
+    
+    # 알림 발송
+    sent_results = []
+    for post in aligned_posts:
+        title_msg = f"[적합] 고려대 정보대 공지 ({board['name']})\n\n{post['title']}"
         for target in recipients:
             params = {
-                "korean-title": title,
+                "korean-title": title_msg,
                 "customer-name": target["name"],
                 "article-link": post["link"],
             }
-            try:
-                data = send_kakao(target["contact"], TEMPLATE_CODE, params)
-                results.append({"title": post["title"], "recipient": target["contact"], "status": data})
-            except Exception as exc:  # pragma: no cover
-                LOG.exception("Kakao send error: %s", exc)
-                results.append({"title": post["title"], "recipient": target["contact"], "error": str(exc)})
-    return results
+            res = send_kakao(target["contact"], TEMPLATE_CODE, params)
+            sent_results.append({"recipient": target["contact"], "title": post["title"], "result": res})
+            
+    return {"board": board["name"], "total_posts": len(posts), "aligned_posts": len(aligned_posts), "sent": sent_results}
 
-
-def run(event: dict[str, Any] | None = None, context: Any | None = None) -> dict[str, Any]:
+def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     payload = event or {}
-    url = payload.get("url")
-    if not url:
-        raise ValueError("url is required for Firecrawl fallback")
+    
+    # 1. 프로필 확보 (Payload -> Env Var -> File 순서)
     profile_text = payload.get("user_profile")
     if not profile_text:
-        raise ValueError("user_profile is required")
-    recipients = payload.get("recipients")
-    recipients = recipients if isinstance(recipients, list) and recipients else RECIPIENTS_DEFAULT
+        profile_text = os.getenv("USER_PROFILE") # [중요] 환경변수에서 로드
+    
+    if not profile_text:
+        # 최후의 수단: 파일 읽기
+        try:
+            with open("user_profile.json", "r", encoding="utf-8") as f:
+                profile_text = f.read()
+        except FileNotFoundError:
+            pass
 
-    markdown = scrape_markdown(url)
-    posts = extract_posts(markdown)
-    LOG.info("Firecrawl extracted %s candidate posts from %s", len(posts), url)
-    aligned_posts: list[dict[str, Any]] = []
-    evaluated: list[dict[str, Any]] = []
-    for post in posts:
-        entry = dict(post)
-        decision, reason = score_notice(profile_text, entry["title"], entry["link"])
-        entry["aligned"] = decision
-        entry["reason"] = reason
-        evaluated.append(entry)
-        if decision:
-            aligned_posts.append(entry)
-    sent = notify(aligned_posts, recipients)
-    return {
-        "source": "firecrawl_fallback",
-        "url": url,
-        "count": len(evaluated),
-        "aligned": len(aligned_posts),
-        "posts": evaluated,
-        "sent": sent,
-    }
+    if not profile_text:
+        error_msg = "CRITICAL: 'user_profile'이 없습니다. 환경변수 USER_PROFILE을 설정하세요."
+        LOG.error(error_msg)
+        return {"error": error_msg}
 
+    recipients = payload.get("recipients") or RECIPIENTS_DEFAULT
+    boards = payload.get("boards") or BOARDS_DEFAULT
+    base_url = normalize_base(payload.get("base_url"))
+    
+    report = []
+    for board in boards:
+        report.append(process_board(board, base_url, profile_text, recipients))
+        
+    return {"status": "completed", "details": report}
 
 if __name__ == "__main__":
-    demo_profile = os.getenv(
-        "FIRECRAWL_PROFILE",
-        "Demo profile: generalist student exploring all opportunities.",
-    )
-    print(run({"url": "https://firecrawl.dev", "user_profile": demo_profile}))
+    # 로컬 테스트용 (또는 디버깅용)
+    print("=== 로컬/디버그 실행 시작 ===")
+    
+    # 가짜 프로필 (테스트용)
+    dummy_profile = """
+    저는 컴퓨터학과 학생으로 장학금과 AI 관련 해커톤, 
+    그리고 백엔드 개발 인턴십에 관심이 매우 많습니다.
+    단순한 인문학 특강이나 일반 행사는 관심 없습니다.
+    """
+    
+    # 환경변수가 없으면 더미 사용
+    if not os.getenv("USER_PROFILE"):
+        os.environ["USER_PROFILE"] = dummy_profile
+        print("DEBUG: 테스트용 더미 프로필을 환경변수에 설정했습니다.")
 
+    result = run({})
+    print(json.dumps(result, ensure_ascii=False, indent=2))
