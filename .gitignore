@@ -1,4 +1,4 @@
 /.env.local
 __pycache__/
 .cursor/
-/.env
+.env
