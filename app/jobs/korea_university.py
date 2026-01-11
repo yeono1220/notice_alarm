@@ -1,40 +1,76 @@
 from __future__ import annotations
-
 import json
 import logging
 import os
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urljoin
-
 import requests
 from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
-import google.generativeai as genai  # [변경] 구글 AI 라이브러리 추가
+from google import genai  # 신형 라이브러리
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 LOG = logging.getLogger("korea_university")
 
-BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
-TIMEZONE = ZoneInfo("Asia/Seoul")
-HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
+# 환경 변수 및 설정
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
+TIMEZONE = ZoneInfo("Asia/Seoul")
 
-SENDER_KEY = "1763d8030dde5f5f369ea0a088598c2fb4c792ab"
-SECRET_KEY = "PuyyHGNZ"
-APP_KEY = "LROcHEW7abBbFhzc"
+# [핵심 수정] 신형 라이브러리 설정 방식
+if GEMINI_API_KEY:
+    client = genai.Client(api_key=GEMINI_API_KEY)
+else:
+    LOG.warning("GEMINI_API_KEY is missing!")
+    client = None
+
+def ask_ai(prompt: str) -> str:
+    try:
+        if not client: return "ERROR: NO CLIENT"
+        
+        # [수정] 2026년 표준 모델명과 신규 라이브러리 호출 규격 적용
+        response = client.models.generate_content(
+            model="gemini-2.0-flash", # 1.5-flash 대신 2.0-flash 권장
+            contents=prompt,
+            config={
+                'tools': [], # AFC 등 불필요한 기능 차단으로 할당량 절약
+                'automatic_function_calling': {'disable': True}
+            }
+        )
+        return response.text.strip()
+    except Exception as e:
+        LOG.error(f"AI 호출 에러: {e}")
+        return "ERROR"
+def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
+    if not profile_text: return False, "no-profile"
+    
+    # 테스트를 위해 기준을 조금 완화하거나 명확히 지시
+    user_prompt = f"""
+    Profile: {profile_text}
+    Notice: {title}
+    Analyze if this is relevant. Respond ONLY with 'YES' or 'NO'.
+    """
+    
+    answer_text = ask_ai(user_prompt).upper()
+    LOG.info(f"🤖 AI 답변 ({title[:20]}...): {answer_text}")
+    
+    if "YES" in answer_text: return True, "YES"
+    return False, "NO"
+
+# ... (나머지 send_kakao, fetch_board 등 기존 함수들은 그대로 유지) ...
+# (기존에 잘 돌아가던 파싱 및 알림 로직은 그대로 두셔도 됩니다)
+BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
+
+SENDER_KEY = os.getenv("KAKAO_SENDER_KEY")
+SECRET_KEY = os.getenv("KAKAO_SECRET_KEY")
+APP_KEY = os.getenv("KAKAO_APP_KEY")
 TEMPLATE_CODE = "send-article"
 
 # [변경] OpenAI 설정 제거 및 Gemini 설정 추가
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-else:
-    LOG.warning("GEMINI_API_KEY is missing; alignment scoring disabled")
-    model = None
 
 RECIPIENTS_DEFAULT = [
     {"name": "고려대 학부생 김수겸", "contact": "01068584123"},
@@ -66,71 +102,7 @@ def normalize_base(url: str | None) -> str:
 AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower() 
 # OpenAI 키도 필요하면 여기서 불러오기 (나중을 위해)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-def ask_ai(prompt: str) -> str:
-    """
-    이 함수는 'AI_PROVIDER' 변수에 따라 Gemini 또는 OpenAI를 골라서 질문을 던집니다.
-    나중에 OpenAI로 바꾸고 싶으면 환경변수 AI_PROVIDER를 'openai'로 바꾸면 됩니다.
-    """
-    try:
-        # 1. Gemini 사용 (기본)
-        if AI_PROVIDER == "gemini":
-            if not model: return "ERROR: Gemini Model Not Loaded"
-            response = model.generate_content(prompt)
-            return response.text.strip()
-            
-        # 2. OpenAI 사용 (나중에 키만 넣으면 바로 작동)
-        elif AI_PROVIDER == "openai":
-            if not OPENAI_API_KEY: return "ERROR: No OpenAI Key"
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "gpt-4o-mini", # 가성비 모델
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            resp = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()['choices'][0]['message']['content'].strip()
-            return f"ERROR: OpenAI Status {resp.status_code}"
-
-    except Exception as e:
-        LOG.error(f"AI 호출 중 에러 발생: {e}")
-        return "ERROR"
-    
-    return "ERROR: Unknown Provider"
-def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
-    """[수정됨] 직접 모델을 부르지 않고 ask_ai 함수를 사용"""
-    if not profile_text:
-        return False, "no-profile"
-    
-    # 프롬프트 구성
-    user_prompt = f"""
-    Candidate profile:
-    {profile_text}
-
-    Notice title: {title}
-    Notice link: {link}
-
-    Analyze if this notice is HIGHLY RELEVANT to the candidate.
-    Respond with exactly 'YES' or 'NO'.
-    """
-    
-    # [핵심 변경] 여기서 ask_ai 함수를 호출합니다!
-    answer_text = ask_ai(user_prompt).upper()
-    
-    if "YES" in answer_text:
-        return True, "YES"
-    if "NO" in answer_text:
-        return False, "NO"
-        
-    # 에러나 모호한 답변 처리
-    if "ERROR" in answer_text:
-        return False, "ai-error"
-        
-    LOG.warning(f"AI 모호한 응답: {answer_text} -> (제목: {title})")
-    return False, "ambiguous"
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 def send_kakao(contact: str, template_code: str, template_param: dict[str, str]) -> dict[str, Any]:
     payload = {

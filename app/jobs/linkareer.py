@@ -39,9 +39,9 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/com
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "20"))
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
-SENDER_KEY = "1763d8030dde5f5f369ea0a088598c2fb4c792ab"
-SECRET_KEY = "PuyyHGNZ"
-APP_KEY = "LROcHEW7abBbFhzc"
+SENDER_KEY = os.getenv("KAKAO_SENDER_KEY")
+SECRET_KEY = os.getenv("KAKAO_SECRET_KEY")
+APP_KEY = os.getenv("KAKAO_APP_KEY")
 TEMPLATE_CODE = "send-article"
 RECIPIENTS_DEFAULT = [
     {"name": "고려대 학부생 김수겸", "contact": "01068584123"},
