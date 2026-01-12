@@ -25,13 +25,15 @@ def preprocess_for_ocr(pil_img: Image.Image) -> Image.Image:
     return Image.fromarray(thresh)
 
 pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-def extract_text_from_image(img_url: str) -> str:
+def extract_text_from_image(img_url: str, parent_link: str) -> str:
     try:
         resp = session.get(img_url, timeout=HTTP_TIMEOUT)
-        LOG.info(f"OCR 이미지 다운로드: {resp.status_code}, {resp.headers.get('Content-Type')}")
+        # 로그에 원본 게시글 링크(parent_link)를 포함하여 출력
+        LOG.info(f"📸 이미지 다운로드 시도: {img_url} (출처: {parent_link})")
+        LOG.info(f"   └ 응답: {resp.status_code}, 타입: {resp.headers.get('Content-Type')}")
 
-        if "image" not in resp.headers.get("Content-Type", ""):
-            LOG.error("이미지가 아님")
+        if "image" not in resp.headers.get("Content-Type", "").lower():
+            LOG.error(f"   └ 실패: 이미지가 아님 ({img_url})")
             return ""
 
         img = Image.open(BytesIO(resp.content))
@@ -42,9 +44,10 @@ def extract_text_from_image(img_url: str) -> str:
             lang="kor+eng",
             config="--oem 3 --psm 6"
         )
+        LOG.info(f"   └ OCR 처리 완료 (글자 수: {len(text.strip())})")
         return text.strip()
     except Exception as e:
-        LOG.error(f"OCR 실패: {e}")
+        LOG.error(f"   └ OCR 실패 ({img_url}): {e}")
         return ""
 
 # --- 추가된 2차 크롤링 함수 ---
@@ -55,25 +58,46 @@ def fetch_post_content(link: str) -> tuple[str, list[str]]:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # [이미지 분석 기준] image_c87a91.png의 구조 반영
-        # 본문 텍스트와 이미지가 모두 들어있는 fr-view 클래스를 먼저 찾습니다.
-        content_area = soup.select_one(".fr-view") or soup.select_one(".article-text") or soup.select_one(".t_view")
+        # 1. 본문 영역 탐색 (가장 정확한 선택자 순서)
+        # 정보대 게시물은 보통 .view-con 안에 .fr-view가 들어있는 구조입니다.
+        content_area = (
+            soup.select_one(".view-con") or 
+            soup.select_one(".fr-view") or 
+            soup.select_one(".article-view") or
+            soup.select_one(".re-view")
+        )
         
         if content_area:
-            text = content_area.get_text(" ", strip=True) # 텍스트 간 공백 추가
+            text = content_area.get_text(" ", strip=True)
             
-            # 이미지 태그 추출 및 절대 경로 변환
+            # 2. 이미지 추출 (보여주신 태그 구조 반영)
             img_tags = content_area.find_all("img")
             img_urls = []
-            for img in img_tags:
-                src = img.get("src") or img.get("data-path") # data-path 속성도 체크
-                if src:
-                    img_urls.append(urljoin(link, src))
             
+            for img in img_tags:
+                # src와 data-path를 모두 확인
+                src = img.get("src") or img.get("data-path")
+                
+                if src:
+                    # 필터링: 에디터 아이콘이나 아주 작은 이미지는 제외 (OCR 효율성)
+                    if any(x in src for x in ["/icon/", "base64", "emoji"]):
+                        continue
+                    
+                    # 상대 경로(/_res/...)를 절대 경로로 결합
+                    # urljoin은 link가 https://info.korea.ac.kr/... 이므로 알아서 합쳐줍니다.
+                    full_url = urljoin(link, src)
+                    img_urls.append(full_url)
+            
+            LOG.info(f"✅ 이미지 감지 성공: {len(img_urls)}개 발견 (URL: {link})")
             return text, img_urls
+            
+        LOG.warning(f"⚠️ 본문 영역 탐색 실패: {link}")
         return "본문을 찾을 수 없습니다.", []
+        
     except Exception as e:
-        return f"에러 발생: {e}", []    
+        LOG.error(f"❌ 2차 크롤링 에러: {e}")
+        return f"에러 발생: {e}", []
+    
 BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
 SENDER_KEY = os.getenv("KAKAO_SENDER_KEY")
@@ -247,20 +271,32 @@ def evaluate_posts(profile_text: str, board_name: str, posts: list[dict[str, str
         post_copy["reason"] = rationale
         post_copy["aligned"] = decision
         
-        if decision: # AI가 제목만 보고 YES라고 한 경우
-            LOG.info(f"🔍 YES 공지 발견! 본문/이미지 분석 시작: {post_copy['title']}")
+        # 필드 초기화
+        post_copy["full_content"] = ""
+        post_copy["images"] = []
+
+        if decision: 
+            LOG.info(f"🔍 [분석 시작] 제목: {post_copy['title']}")
             full_text, img_urls = fetch_post_content(post_copy["link"])
             
             ocr_combined_text = ""
-            for url in img_urls:
-                # OCR 실행 (여기서 에러가 나면 빈 문자열 반환)
-                ocr_result = extract_text_from_image(url)
+            for idx, url in enumerate(img_urls):
+                # 이미지별로 순번과 링크를 로그에 남김
+                ocr_result = extract_text_from_image(url, post_copy["link"])
                 if ocr_result:
-                    ocr_combined_text += f"\n\n--- [이미지 텍스트 시작] ---\n{ocr_result}\n--- [이미지 텍스트 끝] ---\n"
+                    ocr_combined_text += f"\n\n--- [이미지 #{idx+1} 텍스트 시작] ---\n{ocr_result}\n--- [이미지 #{idx+1} 텍스트 끝] ---\n"
             
-            # 최종 결과물에 합치기
-            post_copy["full_content"] = full_text + ocr_combined_text
+            # 최종 결합 및 할당
+            post_copy["full_content"] = (full_text + ocr_combined_text).strip()
             post_copy["images"] = img_urls
+
+            # 로그로 결합 결과 확인
+            LOG.info(f"📊 [결합 완료] {post_copy['title']}")
+            LOG.info(f"   └ 본문 텍스트 길이: {len(full_text)}")
+            LOG.info(f"   └ 이미지 OCR 텍스트 길이: {len(ocr_combined_text)}")
+            LOG.info(f"   └ 최종 full_content 길이: {len(post_copy['full_content'])}")
+            
+            aligned.append(post_copy)
             
         evaluated.append(post_copy)
     return aligned, evaluated
@@ -315,32 +351,74 @@ def process_board(board: dict[str, str], base_url: str, profile_text: str, recip
 # app/jobs/korea_university.py 의 run 함수 수정 제안
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     payload = event or {}
-    profile_text = payload.get("user_profile")
+    # 1. 우선순위: event 전달값 -> 환경변수 -> 로컬 파일
+    profile_text = payload.get("user_profile") or os.getenv("USER_PROFILE")
     
     if not profile_text:
         try:
-            with open("user_profile.json", "r", encoding="utf-8") as f:
-                # [수정] JSON 파싱을 시도하여 구조화된 데이터에서 핵심 요약(summary)을 추출합니다.
+            # Dockerfile에서 복사된 user_profile.json 확인
+            profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
+            with open(profile_path, "r", encoding="utf-8") as f:
                 try:
                     data = json.load(f)
                     profile_text = data.get("summary") or data.get("profile") or str(data)
                 except json.JSONDecodeError:
+                    f.seek(0)
                     profile_text = f.read()
         except Exception as e:
             LOG.error(f"프로필 로드 실패: {e}")
-    # 2. 프로필이 여전히 없으면 에러 반환
+
     if not profile_text:
-        return {"error": "user_profile is required and not found in file"}
-    
-    # ... (이하 동일한 로직)
+        return {"error": "user_profile is required and not found"}
+
+    # --- 실제 크롤링 실행 로직 ---
+    base_url = payload.get("base_url") or BASE_URL_DEFAULT
+    all_results = []
+
+    for board in BOARDS_DEFAULT:
+        LOG.info(f"🚀 {board['name']} 크롤링 시작...")
+        # process_board 내부에서 fetch_post_content와 이미지 OCR이 실행됨
+        result = process_board(board, base_url, profile_text, RECIPIENTS_DEFAULT)
+        all_results.append(result)
+
+    LOG.info(f"✅ 총 {len(all_results)}개 게시판 작업 완료")
+    return {"status": "success", "results": all_results}
+
+# app/jobs/korea_university.py 하단 수정 제안
 
 if __name__ == "__main__":
-    profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
-    if os.path.isfile(profile_path):
-        with open(profile_path, "r", encoding="utf-8") as profile_file:
-            profile_text = profile_file.read()
-        # 로컬 테스트용 실행
-        print(json.dumps(run({"user_profile": profile_text, "base_url": BASE_URL_DEFAULT}), ensure_ascii=False, indent=2))
-    else:
-        # 파일이 없으면 더미 프로필로 테스트하거나 에러 발생
-        print("user_profile.json not found, skipping run.")
+    # 1. 로그 레벨을 강제로 INFO로 설정하여 출력 확인
+    logging.basicConfig(level=logging.INFO)
+    LOG.info("🚀 크롤링 작업을 시작합니다...")
+
+    # 2. 로컬 파일이나 환경 변수에서 프로필 로드 시도
+    profile_text = os.getenv("USER_PROFILE")
+    if not profile_text:
+        profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
+        if os.path.exists(profile_path):
+            with open(profile_path, "r", encoding="utf-8") as f:
+                profile_text = f.read()
+    
+    # 3. 프로필이 없더라도 테스트용 더미 데이터로라도 실행 강제
+    if not profile_text:
+        LOG.warning("⚠️ 프로필을 찾을 수 없어 테스트 프로필로 실행합니다.")
+        profile_text = "고려대학교 컴퓨터학과 학생, AI 해커톤 및 장학금에 관심 있음"
+
+    # 4. 실제 실행
+    event_data = {
+        "user_profile": profile_text,
+        "base_url": BASE_URL_DEFAULT
+    }
+    
+    try:
+        # 모든 게시판 순회 실행
+        results = []
+        for board in BOARDS_DEFAULT:
+            res = process_board(board, BASE_URL_DEFAULT, profile_text, RECIPIENTS_DEFAULT)
+            results.append(res)
+        
+        # 결과 출력 (이 로그가 Cloud Run에 남아야 함)
+        print(json.dumps({"results": results}, ensure_ascii=False, indent=2))
+        LOG.info("✅ 모든 작업이 완료되었습니다.")
+    except Exception as e:
+        LOG.error(f"❌ 실행 중 치명적 오류 발생: {e}")
