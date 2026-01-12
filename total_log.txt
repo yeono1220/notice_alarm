@@ -1,0 +1,300 @@
+
+
+
+Container called exit(0).
+}
+  ]
+    }
+      ]
+        }
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/course_competition.do?mode=view&articleNo=798095&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[???????] ?????-???? AI ???",
+        {
+      "evaluated": [
+      ],
+        }
+          }
+            }
+              ]
+                }
+                  "recipientGroupingKey": null
+                  "resultMessage": "SUCCESS",
+                  "resultCode": 0,
+                  "recipientNo": "01026570090",
+                  "recipientSeq": 1,
+                {
+              "sendResults": [
+              "senderGroupingKey": null,
+              "requestId": "20260112143225hTfnkdk3PW0",
+            "message": {
+            },
+              "isSuccessful": true
+              "resultMessage": "success",
+              "resultCode": 0,
+            "header": {
+          "status": {
+          "recipient": "01026570090",
+          "title": "[???????] ?????-???? AI ???",
+          "board": "???",
+        {
+        },
+          }
+            }
+              ]
+                }
+                  "recipientGroupingKey": null
+                  "resultMessage": "SUCCESS",
+                  "resultCode": 0,
+                  "recipientNo": "01068584123",
+                  "recipientSeq": 1,
+                {
+              "sendResults": [
+              "senderGroupingKey": null,
+              "requestId": "20260112143224MCiHdU4ZG00",
+            "message": {
+            },
+              "isSuccessful": true
+              "resultMessage": "success",
+              "resultCode": 0,
+            "header": {
+          "status": {
+          "recipient": "01068584123",
+          "title": "[???????] ?????-???? AI ???",
+          "board": "???",
+        {
+      "sent": [
+      ],
+        }
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/course_competition.do?mode=view&articleNo=798095&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[???????] ?????-???? AI ???",
+        {
+      "posts": [
+      "board": "???",
+    {
+    },
+      ]
+        }
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/course_intern.do?mode=view&articleNo=798093&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[NAVER Z] 2? ??? ??? ??",
+        {
+      "evaluated": [
+      "sent": [],
+      "posts": [],
+      "board": "???",
+    {
+    },
+      ]
+        }
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/course_program.do?mode=view&articleNo=797735&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[??SDS] ????? ?????? ??",
+        {
+        },
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/course_program.do?mode=view&articleNo=797995&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[??] ??? ??? ?? ??? ??, ??? 4? ??(~1/19??)",
+        {
+        },
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/course_program.do?mode=view&articleNo=798141&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "???????? 7? (???? X SK?????) ??? ?? (~1? 22?)",
+        {
+        },
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/course_program.do?mode=view&articleNo=798143&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[??????] ?AI??? ???? ????(??)? - 8? ??",
+        {
+      "evaluated": [
+      ],
+        }
+          }
+            }
+              ]
+                }
+                  "recipientGroupingKey": null
+                  "resultMessage": "SUCCESS",
+                  "resultCode": 0,
+                  "recipientNo": "01026570090",
+                  "recipientSeq": 1,
+                {
+              "sendResults": [
+              "senderGroupingKey": null,
+              "requestId": "202601121432225YxAwpO2d00",
+            "message": {
+            },
+              "isSuccessful": true
+              "resultMessage": "success",
+              "resultCode": 0,
+            "header": {
+          "status": {
+          "recipient": "01026570090",
+          "title": "[??SDS] ????? ?????? ??",
+          "board": "????",
+        {
+        },
+          }
+            }
+              ]
+                }
+                  "recipientGroupingKey": null
+                  "resultMessage": "SUCCESS",
+                  "resultCode": 0,
+                  "recipientNo": "01068584123",
+                  "recipientSeq": 1,
+                {
+              "sendResults": [
+              "senderGroupingKey": null,
+              "requestId": "2026011214322214JikiWJye0",
+            "message": {
+            },
+              "isSuccessful": true
+              "resultMessage": "success",
+              "resultCode": 0,
+            "header": {
+          "status": {
+          "recipient": "01068584123",
+          "title": "[??SDS] ????? ?????? ??",
+          "board": "????",
+        {
+      "sent": [
+      ],
+        }
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/course_program.do?mode=view&articleNo=797735&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[??SDS] ????? ?????? ??",
+        {
+      "posts": [
+      "board": "????",
+    {
+    },
+      ]
+        }
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/course_job.do?mode=view&articleNo=794293&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[?????????] 2026 H1 INTERNSHIP PROGRAM ?? (~1/6)",
+        {
+        },
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/course_job.do?mode=view&articleNo=797900&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[HL??????] ??, ??, ???? ???? ?? (~01.13)",
+        {
+        },
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/course_job.do?mode=view&articleNo=798092&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[????] ????? ?? ??(~1/25)",
+        {
+      "evaluated": [
+      ],
+        }
+          }
+            }
+              ]
+                }
+                  "recipientGroupingKey": null
+                  "resultMessage": "SUCCESS",
+                  "resultCode": 0,
+                  "recipientNo": "01026570090",
+                  "recipientSeq": 1,
+                {
+              "sendResults": [
+              "senderGroupingKey": null,
+              "requestId": "20260112143219O30g0RS4HI0",
+            "message": {
+            },
+              "isSuccessful": true
+              "resultMessage": "success",
+              "resultCode": 0,
+            "header": {
+          "status": {
+          "recipient": "01026570090",
+          "title": "[????] ????? ?? ??(~1/25)",
+          "board": "????",
+        {
+        },
+          }
+            }
+              ]
+                }
+                  "recipientGroupingKey": null
+                  "resultMessage": "SUCCESS",
+                  "resultCode": 0,
+                  "recipientNo": "01068584123",
+                  "recipientSeq": 1,
+                {
+              "sendResults": [
+              "senderGroupingKey": null,
+              "requestId": "20260112143219NFufpTbqyu0",
+            "message": {
+            },
+              "isSuccessful": true
+              "resultMessage": "success",
+              "resultCode": 0,
+            "header": {
+          "status": {
+          "recipient": "01068584123",
+          "title": "[????] ????? ?? ??(~1/25)",
+          "board": "????",
+        {
+      "sent": [
+      ],
+        }
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/course_job.do?mode=view&articleNo=798092&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[????] ????? ?? ??(~1/25)",
+        {
+      "posts": [
+      "board": "????",
+    {
+    },
+      ]
+        }
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/news.do?mode=view&articleNo=797583&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[??] \"??? ??? ??, ???????? ???? 50?\" ??????? ?? ?? (??? ??)",
+        {
+        },
+          "aligned": false
+          "reason": "NO",
+          "link": "https://info.korea.ac.kr/info/board/news.do?mode=view&articleNo=797621&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "2026 ?????? ???? ???? ???? ?? ??",
+        {
+        },
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/news.do?mode=view&articleNo=797760&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[ICT?????????/???????] Boston University ??? ?? ?? ??? (1/9(?))",
+        {
+        },
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",
+          "link": "https://info.korea.ac.kr/info/board/news.do?mode=view&articleNo=798094&article.offset=0&articleLimit=10&totalNoticeYn=N&totalBoardNo=",
+          "title": "[??] ? 13? ?????? ??(??? ??)",
+        {
+        },
+          "full_content": "??? ?? ? ????."
+          "aligned": true,
+          "reason": "YES",

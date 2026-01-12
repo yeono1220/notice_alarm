@@ -9,7 +9,39 @@ import requests
 from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
 from google import genai  # 신형 라이브러리
-
+# --- 추가된 2차 크롤링 함수 ---
+def fetch_post_content(link: str) -> tuple[str, list[str]]:
+    """상세 페이지에서 본문 텍스트와 이미지 URL 리스트를 추출합니다."""
+    try:
+        resp = session.get(link, timeout=HTTP_TIMEOUT)
+        resp.encoding = 'utf-8' # 한글 깨짐 방지
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 실제 확인하신 상세 페이지 구조 반영 (.t_view)
+        content_area = soup.select_one(".t_view") or soup.select_one("#jwxe_main_content")
+        
+        if content_area:
+            # 1. 본문 텍스트 추출
+            text = content_area.get_text(strip=True)
+            
+            # 2. 이미지 URL 추출 (bs4 활용)
+            # 상대 경로를 절대 경로로 변환하기 위해 urljoin 사용
+            img_tags = content_area.find_all("img")
+            img_urls = [urljoin(link, img.get("src")) for img in img_tags if img.get("src")]
+            
+            return text, img_urls
+        return "본문을 찾을 수 없습니다.", []
+    except Exception as e:
+        LOG.error(f"추출 에러 ({link}): {e}")
+        return f"에러 발생: {e}", []
+    
+BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
+SENDER_KEY = os.getenv("KAKAO_SENDER_KEY")
+SECRET_KEY = os.getenv("KAKAO_SECRET_KEY")
+APP_KEY = os.getenv("KAKAO_APP_KEY")
+TEMPLATE_CODE = "send-article"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 LOG = logging.getLogger("korea_university")
@@ -63,11 +95,6 @@ def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
 # (기존에 잘 돌아가던 파싱 및 알림 로직은 그대로 두셔도 됩니다)
 BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
-
-SENDER_KEY = os.getenv("KAKAO_SENDER_KEY")
-SECRET_KEY = os.getenv("KAKAO_SECRET_KEY")
-APP_KEY = os.getenv("KAKAO_APP_KEY")
-TEMPLATE_CODE = "send-article"
 
 # [변경] OpenAI 설정 제거 및 Gemini 설정 추가
 
@@ -178,11 +205,16 @@ def evaluate_posts(profile_text: str, board_name: str, posts: list[dict[str, str
         
         post_copy["reason"] = rationale
         post_copy["aligned"] = decision
-        evaluated.append(post_copy)
         
-        if decision:
+        if decision: # AI 판정이 YES일 때만 2차 크롤링 수행
+            LOG.info(f"🔍 YES 공지 발견! 본문/이미지 추출: {post_copy['title']}")
+            full_text, img_urls = fetch_post_content(post_copy["link"]) # [수정 지점]
+            
+            post_copy["full_content"] = full_text
+            post_copy["images"] = img_urls # 이미지 주소 리스트 저장
             aligned.append(post_copy)
             
+        evaluated.append(post_copy)
     return aligned, evaluated
 
 
@@ -226,9 +258,12 @@ def process_board(board: dict[str, str], base_url: str, profile_text: str, recip
         LOG.exception("Board fetch error for %s: %s", board["name"], exc)
         return {"board": board["name"], "error": str(exc), "posts": [], "sent": [], "evaluated": []}
     
-    sent = notify(board, aligned, recipients)
+    # [설정] 카카오 전송을 잠시 막고 싶을 때 아래를 주석 처리합니다.
+    # sent = notify(board, aligned, recipients) TODO 
+    sent = [] 
+    LOG.info(f"📢 [전송 스킵] {board['name']} 적합 공지 {len(aligned)}건 수집 완료")
+    
     return {"board": board["name"], "posts": aligned, "sent": sent, "evaluated": evaluated}
-
 
 # app/jobs/korea_university.py 의 run 함수 수정 제안
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
