@@ -1,0 +1,10 @@
+{
+  "userId": "user_test_123",
+  "targetUrl": "https://info.korea.ac.kr/info/board/course_competition.do?mode=view&articleNo=798095",
+  "userProfile": {
+    "summary": "AI 및 데이터 시각화에 관심이 많은 개발자"
+  },
+  "config": {
+    "language": "Korean"
+  }
+}

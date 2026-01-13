@@ -4,6 +4,7 @@ import pytesseract
 from PIL import Image
 from io import BytesIO
 import json
+import re  # 파일 상단에 import re 추가
 
 import logging
 import sys
@@ -141,22 +142,40 @@ def ask_ai(prompt: str) -> str:
     except Exception as e:
         LOG.error(f"AI 호출 에러: {e}")
         return "ERROR"
-def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
-    if not profile_text: return False, "no-profile"
-    
-    # 테스트를 위해 기준을 조금 완화하거나 명확히 지시
-    user_prompt = f"""
-    Profile: {profile_text}
-    Notice: {title}
-    Analyze if this is relevant. Respond ONLY with 'YES' or 'NO'.
-    """
-    
-    answer_text = ask_ai(user_prompt).upper()
-    LOG.info(f"🤖 AI 답변 ({title[:20]}...): {answer_text}")
-    
-    if "YES" in answer_text: return True, "YES"
-    return False, "NO"
 
+def score_notice(profile_text: str, title: str, target_url: str = "") -> dict[str, Any]:
+    prompt = f""" ... (위의 엄격한 프롬프트) ... """
+    ai_response = ask_ai(prompt).strip()
+    
+    try:
+        # 💡 정규표현식으로 { } 사이의 내용만 추출 (가장 확실한 방법)
+        match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+        if match:
+            clean_json = match.group(0)
+            ai_json = json.loads(clean_json)
+        else:
+            raise ValueError("No JSON found in response")
+            
+    except Exception as e:
+        LOG.error(f"❌ JSON 추출 실패: {e} | 응답원문: {ai_response}")
+        ai_json = {
+            "relevanceScore": 0.0,
+            "category": "error",
+            "reason": "AI 응답 파싱 실패"
+        }
+    
+    return {
+        "status": "SUCCESS",
+        "relevanceScore": ai_json.get("relevanceScore", 0.0),
+        "data": {
+            "category": ai_json.get("category", "unknown"),
+            "title": title,
+            "sourceName": "고려대학교 정보대학",
+            "summary": ai_json.get("reason", ""),
+            "originalUrl": target_url,
+            "timestamp": datetime.now().isoformat()
+        }
+    }
 # ... (나머지 send_kakao, fetch_board 등 기존 함수들은 그대로 유지) ...
 # (기존에 잘 돌아가던 파싱 및 알림 로직은 그대로 두셔도 됩니다)
 BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
@@ -260,28 +279,36 @@ def parse_posts(html: str, page_url: str) -> list[dict[str, str]]:
         
     return posts
 
-
 def evaluate_posts(profile_text: str, board_name: str, posts: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     aligned: list[dict[str, Any]] = []
     evaluated: list[dict[str, Any]] = []
     
     for post in posts:
         post_copy = dict(post)
-        decision, rationale = score_notice(profile_text, post_copy["title"], post_copy["link"])
+        
+        # 1. AI 분석 (한 번만 호출)
+        result = score_notice(profile_text, post_copy["title"], post_copy["link"])
+        
+        # 💡 리턴받은 딕셔너리 안에서 필요한 값을 꺼내기
+        decision = result["relevanceScore"] >= 0.5 
+        rationale = result["data"]["summary"]
+        
+        # 이 시점에서 result를 출력해보면 원하시는 값을 볼 수 있습니다.
+        LOG.info(f"AI 분석 결과: {json.dumps(result, ensure_ascii=False)}")        
         post_copy["reason"] = rationale
         post_copy["aligned"] = decision
+        post_copy["relevanceScore"] = result.get("relevanceScore", 0.0) # 점수도 저장해두면 좋음
         
         # 필드 초기화
         post_copy["full_content"] = ""
         post_copy["images"] = []
 
         if decision: 
-            LOG.info(f"🔍 [분석 시작] 제목: {post_copy['title']}")
+            LOG.info(f"🔍 [관심 공지 발견] 제목: {post_copy['title']} (점수: {post_copy['relevanceScore']})")
             full_text, img_urls = fetch_post_content(post_copy["link"])
             
             ocr_combined_text = ""
             for idx, url in enumerate(img_urls):
-                # 이미지별로 순번과 링크를 로그에 남김
                 ocr_result = extract_text_from_image(url, post_copy["link"])
                 if ocr_result:
                     ocr_combined_text += f"\n\n--- [이미지 #{idx+1} 텍스트 시작] ---\n{ocr_result}\n--- [이미지 #{idx+1} 텍스트 끝] ---\n"
@@ -290,15 +317,12 @@ def evaluate_posts(profile_text: str, board_name: str, posts: list[dict[str, str
             post_copy["full_content"] = (full_text + ocr_combined_text).strip()
             post_copy["images"] = img_urls
 
-            # 로그로 결합 결과 확인
-            LOG.info(f"📊 [결합 완료] {post_copy['title']}")
-            LOG.info(f"   └ 본문 텍스트 길이: {len(full_text)}")
-            LOG.info(f"   └ 이미지 OCR 텍스트 길이: {len(ocr_combined_text)}")
-            LOG.info(f"   └ 최종 full_content 길이: {len(post_copy['full_content'])}")
+            LOG.info(f"📊 [데이터 수집 완료] {post_copy['title']} (본문: {len(full_text)}자, OCR: {len(ocr_combined_text)}자)")
             
             aligned.append(post_copy)
             
         evaluated.append(post_copy)
+        
     return aligned, evaluated
 
 def notify(board: dict[str, str], posts: list[dict[str, Any]], recipients: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -351,8 +375,25 @@ def process_board(board: dict[str, str], base_url: str, profile_text: str, recip
 # app/jobs/korea_university.py 의 run 함수 수정 제안
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     payload = event or {}
+    # event.json의 규격(userProfile)과 기존 환경변수 모두 대응
+    profile_data = payload.get("userProfile") or payload.get("user_profile") or os.getenv("USER_PROFILE")
+    
+    if isinstance(profile_data, dict):
+        profile_text = profile_data.get("summary")
+    else:
+        profile_text = profile_data
+    user_id = payload.get("userId")
+    target_url = payload.get("targetUrl")
+    
+    # userProfile 내의 summary 추출
+    user_profile = payload.get("userProfile", {})
+    profile_summary = user_profile.get("summary", "")
+    
+    # config 설정 (언어 등)
+    config = payload.get("config", {})
+    language = config.get("language", "Korean")
+    payload = event or {}
     # 1. 우선순위: event 전달값 -> 환경변수 -> 로컬 파일
-    profile_text = payload.get("user_profile") or os.getenv("USER_PROFILE")
     
     if not profile_text:
         try:

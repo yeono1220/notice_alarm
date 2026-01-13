@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 from zoneinfo import ZoneInfo
-
+#key가 있는 유형
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 LOG = logging.getLogger("sogang_university")
