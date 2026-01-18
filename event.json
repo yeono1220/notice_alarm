@@ -1,11 +1,10 @@
 {
-  "url": "https://info.korea.ac.kr/info/board/notice_under.do",
-  "user_profile": "Sookyum “Kyle” Kim wants to explore every opportunity—even tangential ones—and is eager to receive all notices regardless of topic.",
-  "recipients": [
-    {"name": "고려대 학부생 김수겸", "contact": "01068584123"},
-    {"name": "고려대 학부생 고연오", "contact": "01026570090"}
-  ],
-  "boards": [
-    {"name": "취업정보", "category": "course_job"}
-  ]
+  "userId": "user_12345",
+  "targetUrl": "https://info.korea.ac.kr/info/board/notice_under.do",
+  "userProfile": {
+    "summary": "AI 및 데이터 시각화에 관심이 많은 개발자. 삼성전자나 두산로보틱스 같은 대기업 채용 공고와 SW 알고리즘 특강, 장학금 정보에 관심이 많음."
+  },
+  "config": {
+    "language": "Korean"
+  }
 }

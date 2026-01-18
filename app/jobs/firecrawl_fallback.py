@@ -10,8 +10,10 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
-import google.generativeai as genai
+from google import genai  # 신형 라이브러리
+from dotenv import load_dotenv
 
+load_dotenv() # .env 파일을 읽어서 os.getenv가 값을 찾을 수 있게 해줌
 # 로깅 설정
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
@@ -33,18 +35,20 @@ TEMPLATE_CODE = "send-article"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GEMINI_API_KEY)
     # Gemini 안전성 설정 (BLOCK_NONE으로 설정하여 거부 방지)
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
-    model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings)
+    config = {
+            "safety_settings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+            "temperature": 0.1, # 일관된 YES/NO 답변을 위해 낮은 온도로 설정
+    }
 else:
     LOG.warning("⚠️ GEMINI_API_KEY가 없습니다. AI 판별 기능이 비활성화됩니다.")
-    model = None
+    client = None
 
 # 수신자 목록
 RECIPIENTS_DEFAULT = [
@@ -72,12 +76,11 @@ def normalize_base(url: str | None) -> str:
     if trimmed.endswith(".do"):
         trimmed = trimmed[: trimmed.rfind("/") + 1]
     return f"{trimmed.rstrip('/')}/"
-
 def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
-    """Gemini를 사용하여 공지사항 적합도 평가"""
+    """Gemini를 사용하여 공지사항 적합도 평가 (신형 SDK 반영)"""
     if not profile_text:
         return False, "no-profile"
-    if not model:
+    if not client:
         return False, "gemini-disabled"
     
     user_prompt = f"""
@@ -90,8 +93,16 @@ def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
     Analyze if this notice is HIGHLY RELEVANT to the candidate.
     Respond with exactly 'YES' or 'NO'.
     """
+    
     try:
-        response = model.generate_content(user_prompt)
+        # 신형 SDK 호출 방식: client.models.generate_content
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=user_prompt,
+            config=config
+        )
+        
+        # 신형에서는 response.text로 바로 접근 가능
         answer_text = response.text.strip().upper()
         
         if "YES" in answer_text:
@@ -105,7 +116,6 @@ def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
     except Exception as exc:
         LOG.error(f"Gemini 호출 에러 (제목: {title}): {exc}")
         return False, "gemini-error"
-
 def send_kakao(contact: str, template_code: str, template_param: dict[str, str]) -> dict[str, Any]:
     payload = {
         "senderKey": SENDER_KEY,

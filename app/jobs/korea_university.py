@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 
 import pytesseract
 from PIL import Image
@@ -17,13 +18,34 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import cv2
 from google import genai  # 신형 라이브러리
-
+from dotenv import load_dotenv
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
+RECIPIENTS_DEFAULT = [
+    {"name": "관리자", "contact": "01026570090"} 
+]
+print("########################################")
+print("#  THIS IS VERSION 5 - FINAL CHECK    #")
+print("########################################")
+load_dotenv() # .env 파일을 읽어서 os.getenv가 값을 찾을 수 있게 해줌
+BOARDS_DEFAULT = [
+    {"name": "학부공지", "category": "notice_under"},
+    {"name": "학부장학", "category": "scholarship_under"},
+    {"name": "정보대소식", "category": "news"},
+    {"name": "취업정보", "category": "course_job"},
+    {"name": "프로그램", "category": "course_program"},
+    {"name": "인턴십", "category": "course_intern"},
+    {"name": "공모전", "category": "course_competition"},
+]
 def preprocess_for_ocr(pil_img: Image.Image) -> Image.Image:
     img = np.array(pil_img)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
     return Image.fromarray(thresh)
-
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 def extract_text_from_image(img_url: str, parent_link: str) -> str:
     try:
@@ -53,7 +75,7 @@ def extract_text_from_image(img_url: str, parent_link: str) -> str:
 # --- 추가된 2차 크롤링 함수 ---
 def fetch_post_content(link: str) -> tuple[str, list[str]]:
     try:
-        resp = session.get(link, timeout=HTTP_TIMEOUT)
+        resp = requests.session.get(link, timeout=HTTP_TIMEOUT)
         resp.encoding = 'utf-8'
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -61,11 +83,11 @@ def fetch_post_content(link: str) -> tuple[str, list[str]]:
         # 1. 본문 영역 탐색 (가장 정확한 선택자 순서)
         # 정보대 게시물은 보통 .view-con 안에 .fr-view가 들어있는 구조입니다.
         content_area = (
-            soup.select_one(".view-con") or 
-            soup.select_one(".fr-view") or 
-            soup.select_one(".article-view") or
-            soup.select_one(".re-view")
-        )
+                soup.select_one(".view-con") or 
+                soup.select_one(".fr-view") or 
+                soup.select_one("#article_text") or # 추가
+                soup.select_one(".board-view-content") # 추가
+            )
         
         if content_area:
             text = content_area.get_text(" ", strip=True)
@@ -126,6 +148,7 @@ else:
 
 def ask_ai(prompt: str) -> str:
     try:
+        LOG.info("AI 호출 시도 중...") # 한글 로그를 단순화하거나 영어로 변경
         if not client: return "ERROR: NO CLIENT"
         
         # [수정] 2026년 표준 모델명과 신규 라이브러리 호출 규격 적용
@@ -137,50 +160,40 @@ def ask_ai(prompt: str) -> str:
                 'automatic_function_calling': {'disable': True}
             }
         )
-        return response.text.strip()
+        LOG.info(f"🤖 Gemini Raw Response: {repr(response.text)}")
+        raw_text = response.text.strip()
+        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        if json_match:
+            clean_json = json_match.group(0)
+            data = json.loads(clean_json)
+            return data.get("score", 0.0), data.get("reason", "분석 완료")
+        else:
+            raise ValueError("JSON format not found")
     except Exception as e:
-        LOG.error(f"AI 호출 에러: {e}")
-        return "ERROR"
-def score_notice(profile_text: str, title: str, link: str) -> tuple[bool, str]:
-    if not profile_text: return False, "no-profile"
+        LOG.error(f"❌ 파싱 에러: {e}")
+        return 0.0, "parsing-failure"
+def score_notice(profile_text: str, title: str, link: str) -> tuple[float, str]:
+    if not profile_text: return 0.0, "no-profile"
     
-    # 테스트를 위해 기준을 조금 완화하거나 명확히 지시
+    # [수정] AI에게 점수(0~1)를 직접 요구하여 relevanceScore 생성
     user_prompt = f"""
     Profile: {profile_text}
-    Notice: {title}
-    Analyze if this is relevant. Respond ONLY with 'YES' or 'NO'.
+    Notice Title: {title}
+    Analyze how relevant this notice is to the profile. 
+    Respond with a JSON object: {{"score": float, "reason": "short explanation in Korean"}}
+    The score must be between 0.0 and 1.0.
+    Respond ONLY with a valid JSON object. Do not include markdown code blocks
     """
     
-    answer_text = ask_ai(user_prompt).upper()
-    LOG.info(f"🤖 AI 답변 ({title[:20]}...): {answer_text}")
-    
-    if "YES" in answer_text: return True, "YES"
-    return False, "NO"
-
-# ... (나머지 send_kakao, fetch_board 등 기존 함수들은 그대로 유지) ...
-# (기존에 잘 돌아가던 파싱 및 알림 로직은 그대로 두셔도 됩니다)
-BASE_URL_DEFAULT = "https://info.korea.ac.kr/info/board/"
-HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
-
-# [변경] OpenAI 설정 제거 및 Gemini 설정 추가
-
-
-RECIPIENTS_DEFAULT = [
-    {"name": "고려대 학부생 김수겸", "contact": "01068584123"},
-    {"name": "고려대 학부생 고연오", "contact": "01026570090"},
-]
-
-BOARDS_DEFAULT = [
-    {"name": "학부공지", "category": "notice_under"},
-    {"name": "학부장학", "category": "scholarship_under"},
-    {"name": "정보대소식", "category": "news"},
-    {"name": "취업정보", "category": "course_job"},
-    {"name": "프로그램", "category": "course_program"},
-    {"name": "인턴십", "category": "course_intern"},
-    {"name": "공모전", "category": "course_competition"},
-]
-
-session = requests.Session()
+    try:
+        response_text = ask_ai(user_prompt)
+        # JSON 부분만 추출 (가장 간단한 방식)
+        start = response_text.find('{')
+        end = response_text.rfind('}') + 1
+        res_json = json.loads(response_text[start:end])
+        return float(res_json.get("score", 0.0)), res_json.get("reason", "분석 완료")
+    except:
+        return 0.0, "AI 분석 실패"
 
 
 def normalize_base(url: str | None) -> str:
@@ -348,77 +361,114 @@ def process_board(board: dict[str, str], base_url: str, profile_text: str, recip
     
     return {"board": board["name"], "posts": aligned, "sent": sent, "evaluated": evaluated}
 
-# app/jobs/korea_university.py 의 run 함수 수정 제안
+# 크롤링 대상 게시판 정의 (코드 상단에 없다면 추가하세요)
+BOARDS_DEFAULT = [
+    {"name": "학부공지", "category": "notice_under"},
+    {"name": "학부장학", "category": "scholarship_under"},
+    {"name": "정보대소식", "category": "news"},
+    {"name": "취업정보", "category": "course_job"},
+    {"name": "프로그램", "category": "course_program"},
+    {"name": "인턴십", "category": "course_intern"},
+    {"name": "공모전", "category": "course_competition"},
+]
+
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
-    payload = event or {}
-    # 1. 우선순위: event 전달값 -> 환경변수 -> 로컬 파일
-    profile_text = payload.get("user_profile") or os.getenv("USER_PROFILE")
+    logger.info("--- [CRAWLER START] ---")
     
-    if not profile_text:
-        try:
-            # Dockerfile에서 복사된 user_profile.json 확인
-            profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
-            with open(profile_path, "r", encoding="utf-8") as f:
-                try:
-                    data = json.load(f)
-                    profile_text = data.get("summary") or data.get("profile") or str(data)
-                except json.JSONDecodeError:
-                    f.seek(0)
-                    profile_text = f.read()
-        except Exception as e:
-            LOG.error(f"프로필 로드 실패: {e}")
+    # 1. 인풋 데이터 확보
+    user_profile = event.get("userProfile", {})
+    profile_summary = user_profile.get("summary", "")
+    target_url = event.get("targetUrl") or BASE_URL_DEFAULT
+    recipients = event.get("recipients", RECIPIENTS_DEFAULT) # 기본 수신자 사용
+    
+    base_url = normalize_base(target_url)
+    
+    # 2. 실행 모드 결정
+    # targetUrl에 특정 카테고리가 포함되어 있으면 그 게시판만, 아니면 전체 순회
+    target_boards = BOARDS_DEFAULT
+    for b in BOARDS_DEFAULT:
+        if b['category'] in target_url:
+            target_boards = [b]
+            break
 
-    if not profile_text:
-        return {"error": "user_profile is required and not found"}
-
-    # --- 실제 크롤링 실행 로직 ---
-    base_url = payload.get("base_url") or BASE_URL_DEFAULT
-    all_results = []
-
-    for board in BOARDS_DEFAULT:
+    all_reports = []
+    
+    # 3. 핵심 엔진(process_board) 실행
+    for board in target_boards:
         LOG.info(f"🚀 {board['name']} 크롤링 시작...")
-        # process_board 내부에서 fetch_post_content와 이미지 OCR이 실행됨
-        result = process_board(board, base_url, profile_text, RECIPIENTS_DEFAULT)
-        all_results.append(result)
+        report = process_board(board, base_url, profile_summary, recipients)
+        all_reports.append(report)
 
-    LOG.info(f"✅ 총 {len(all_results)}개 게시판 작업 완료")
-    return {"status": "success", "results": all_results}
+    # 4. 최종 아웃풋 규격 조립
+    # 여러 게시판 중 'aligned'(적합) 판정된 글이 하나라도 있는지 확인
+    aligned_total = []
+    for r in all_reports:
+        aligned_total.extend(r.get("posts", []))
 
-# app/jobs/korea_university.py 하단 수정 제안
+    if not aligned_total:
+        return {
+            "status": "SUCCESS",
+            "relevanceScore": 0.0,
+            "data": {"message": "적합한 새로운 공지가 없습니다.", "timestamp": datetime.now(TIMEZONE).isoformat()}
+        }
 
-if __name__ == "__main__":
-    # 1. 로그 레벨을 강제로 INFO로 설정하여 출력 확인
-    logging.basicConfig(level=logging.INFO)
-    LOG.info("🚀 크롤링 작업을 시작합니다...")
-
-    # 2. 로컬 파일이나 환경 변수에서 프로필 로드 시도
-    profile_text = os.getenv("USER_PROFILE")
-    if not profile_text:
-        profile_path = os.getenv("PROFILE_PATH", "user_profile.json")
-        if os.path.exists(profile_path):
-            with open(profile_path, "r", encoding="utf-8") as f:
-                profile_text = f.read()
+    # 가장 최신/점수가 높은 공지 하나를 대표로 반환 (규격 준수)
+    best_post = aligned_total[0]
     
-    # 3. 프로필이 없더라도 테스트용 더미 데이터로라도 실행 강제
-    if not profile_text:
-        LOG.warning("⚠️ 프로필을 찾을 수 없어 테스트 프로필로 실행합니다.")
-        profile_text = "고려대학교 컴퓨터학과 학생, AI 해커톤 및 장학금에 관심 있음"
-
-    # 4. 실제 실행
-    event_data = {
-        "user_profile": profile_text,
-        "base_url": BASE_URL_DEFAULT
+    response = {
+        "status": "SUCCESS",
+        "relevanceScore": 1.0, # aligned 리스트에 들어왔다는 건 적합하다는 뜻
+        "data": {
+            "category": best_post.get("category", "공지"),
+            "title": best_post["title"],
+            "sourceName": "고려대학교 정보대학",
+            "summary": best_post.get("reason", "요약 생성 실패"),
+            "fullContent": best_post.get("full_content", ""), # OCR 결과 포함
+            "originalUrl": best_post["link"],
+            "images": best_post.get("images", []),
+            "timestamp": datetime.now(TIMEZONE).isoformat()
+        }
     }
-    
+
+    logger.info(f"--- [CRAWLER END] ---")
+    return response
+if __name__ == "__main__":
+    # 1. 로그 설정
+    logging.basicConfig(level=logging.INFO)
+    LOG.info("🚀 event.json을 이용한 로컬 테스트를 시작합니다...")
+
+    # 2. event.json 파일 읽기
+    event_path = "event.json"
+    if os.path.exists(event_path):
+        with open(event_path, "r", encoding="utf-8") as f:
+            try:
+                event_data = json.load(f)
+                LOG.info("✅ event.json 파일을 성공적으로 로드했습니다.")
+            except json.JSONDecodeError:
+                LOG.error("❌ event.json 파일 형식이 올바르지 않습니다.")
+                sys.exit(1)
+    else:
+        # 파일이 없을 경우를 대비한 최소한의 더미 데이터
+        LOG.warning("⚠️ event.json이 없어 기본 더미 데이터를 생성합니다.")
+        event_data = {
+            "userId": "test_user",
+            "targetUrl": "https://info.korea.ac.kr/info/board/notice_under.do",
+            "userProfile": {
+                "summary": "고려대학교 컴퓨터학과 학생, AI 해커톤 및 장학금에 관심 있음"
+            },
+            "config": {"language": "Korean"}
+        }
+
+    # 3. 실제 run 함수 실행
     try:
-        # 모든 게시판 순회 실행
-        results = []
-        for board in BOARDS_DEFAULT:
-            res = process_board(board, BASE_URL_DEFAULT, profile_text, RECIPIENTS_DEFAULT)
-            results.append(res)
+        # 우리가 정의한 인풋/아웃풋 구조를 그대로 사용하는 run 함수 호출
+        final_output = run(event_data)
         
-        # 결과 출력 (이 로그가 Cloud Run에 남아야 함)
-        print(json.dumps({"results": results}, ensure_ascii=False, indent=2))
-        LOG.info("✅ 모든 작업이 완료되었습니다.")
+        # 4. 최종 결과 출력
+        print("\n" + "="*50)
+        print("최종 API 응답 결과 (Output):")
+        print(json.dumps(final_output, ensure_ascii=False, indent=2))
+        print("="*50)
+        
     except Exception as e:
-        LOG.error(f"❌ 실행 중 치명적 오류 발생: {e}")
+        LOG.error(f"❌ 실행 중 오류 발생: {e}")

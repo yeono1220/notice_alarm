@@ -268,7 +268,7 @@ Cloud Build를 통해 소스 코드를 Docker 이미지로 빌드하고 Cloud Ru
 Bash
 
 # 이미지 빌드
-gcloud builds submit --tag gcr.io/[PROJECT_ID]/allyeojujob-crawler .
+gcloud builds submit --tag gcr.io/[PROJECT_ID]/allyeojujob-crawler . # PROJECT_ID: 지금은 allyeojujob 알려주잡 
 
 # Cloud Run 서비스 배포
 gcloud run deploy allyeojujob \
