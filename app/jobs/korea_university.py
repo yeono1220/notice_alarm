@@ -19,17 +19,9 @@ import numpy as np
 import cv2
 from google import genai  # 신형 라이브러리
 from dotenv import load_dotenv
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
 RECIPIENTS_DEFAULT = [
     {"name": "관리자", "contact": "01026570090"} 
 ]
-print("########################################")
-print("#  THIS IS VERSION 5 - FINAL CHECK    #")
-print("########################################")
-load_dotenv() # .env 파일을 읽어서 os.getenv가 값을 찾을 수 있게 해줌
 BOARDS_DEFAULT = [
     {"name": "학부공지", "category": "notice_under"},
     {"name": "학부장학", "category": "scholarship_under"},
@@ -39,6 +31,17 @@ BOARDS_DEFAULT = [
     {"name": "인턴십", "category": "course_intern"},
     {"name": "공모전", "category": "course_competition"},
 ]
+
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
+
+print("########################################")
+print("#  THIS IS  - FINAL CHECK    #")
+print("########################################")
+load_dotenv() # .env 파일을 읽어서 os.getenv가 값을 찾을 수 있게 해줌
+
 def preprocess_for_ocr(pil_img: Image.Image) -> Image.Image:
     img = np.array(pil_img)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -145,33 +148,67 @@ if GEMINI_API_KEY:
 else:
     LOG.warning("GEMINI_API_KEY is missing!")
     client = None
-
-def ask_ai(prompt: str) -> str:
+def ask_ai(prompt: str) -> tuple[float, str]:
     try:
-        LOG.info("AI 호출 시도 중...") # 한글 로그를 단순화하거나 영어로 변경
-        if not client: return "ERROR: NO CLIENT"
+        LOG.info("=== [AI CALL START] ===")
         
-        # [수정] 2026년 표준 모델명과 신규 라이브러리 호출 규격 적용
+        # 1. 프롬프트 유니코드 안전화 (UTF-8 강제)
+        # 만약 prompt가 유니코드가 아니라면 강제로 utf-8로 변환합니다.
+        if isinstance(prompt, bytes):
+            safe_prompt = prompt.decode('utf-8')
+        else:
+            safe_prompt = str(prompt)
+
+        if not client:
+            LOG.error("❌ 에러: Gemini Client가 설정되지 않았습니다.")
+            return 0.0, "no-client"
+
+        # 2. Gemini 모델 호출 (168라인 부근)
+        LOG.info(f"🤖 Calling model: gemini-2.0-flash... (Prompt size: {len(safe_prompt)})")
+        # [핵심] 런타임에서 인코딩 에러를 방지하기 위해 
+        # 시스템 환경이d 깨져있어도 라이브러리가 UTF-8을 사용하도록 유도합니다.
         response = client.models.generate_content(
-            model="gemini-2.0-flash", # 1.5-flash 대신 2.0-flash 권장
-            contents=prompt,
+            model="gemini-2.0-flash",
+            contents=safe_prompt, 
             config={
-                'tools': [], # AFC 등 불필요한 기능 차단으로 할당량 절약
+                'tools': [],
                 'automatic_function_calling': {'disable': True}
             }
         )
-        LOG.info(f"🤖 Gemini Raw Response: {repr(response.text)}")
-        raw_text = response.text.strip()
+        print(4)
+        # 3. 응답 처리 및 로그 출력 시 인코딩 방어
+        # response.text가 한글일 때 LOG.info에서 터지는 것을 repr()로 방어합니다.
+        raw_text = response.text if response.text else ""
+        LOG.info(f"📥 Raw Response Received: {repr(raw_text)}")
+
+        if not raw_text.strip():
+            LOG.warning("⚠️ AI 응답이 비어있습니다.")
+            return 0.0, "empty-response"
+
+        # 4. JSON 파싱
+        LOG.info("🧩 Parsing JSON from response...")
         json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        
         if json_match:
             clean_json = json_match.group(0)
             data = json.loads(clean_json)
-            return data.get("score", 0.0), data.get("reason", "분석 완료")
+            score = float(data.get("score", 0.0))
+            reason = data.get("reason", "분석 완료")
+            
+            # 사유(reason) 출력 시에도 repr() 사용
+            LOG.info(f"🎯 Analysis Result - Score: {score}, Reason: {repr(reason)}")
+            LOG.info("=== [AI CALL SUCCESS] ===")
+            return score, reason
         else:
-            raise ValueError("JSON format not found")
+            LOG.error(f"❌ JSON 패턴을 찾을 수 없습니다. 원문: {repr(raw_text)}")
+            raise ValueError("JSON format not found in response")
+
     except Exception as e:
-        LOG.error(f"❌ 파싱 에러: {e}")
-        return 0.0, "parsing-failure"
+        # 에러 메시지 자체(예: '본인의_키')를 출력하다 터지지 않게 repr(e) 처리
+        LOG.error(f"💥 Critical Error in ask_ai: {repr(e)}")
+        import traceback
+        LOG.error(traceback.format_exc())
+        return 0.0, f"failure: {repr(str(e))}"
 def score_notice(profile_text: str, title: str, link: str) -> tuple[float, str]:
     if not profile_text: return 0.0, "no-profile"
     
@@ -362,17 +399,9 @@ def process_board(board: dict[str, str], base_url: str, profile_text: str, recip
     return {"board": board["name"], "posts": aligned, "sent": sent, "evaluated": evaluated}
 
 # 크롤링 대상 게시판 정의 (코드 상단에 없다면 추가하세요)
-BOARDS_DEFAULT = [
-    {"name": "학부공지", "category": "notice_under"},
-    {"name": "학부장학", "category": "scholarship_under"},
-    {"name": "정보대소식", "category": "news"},
-    {"name": "취업정보", "category": "course_job"},
-    {"name": "프로그램", "category": "course_program"},
-    {"name": "인턴십", "category": "course_intern"},
-    {"name": "공모전", "category": "course_competition"},
-]
 
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
+    global RECIPIENTS_DEFAULT, BOARDS_DEFAULT
     logger.info("--- [CRAWLER START] ---")
     
     # 1. 인풋 데이터 확보
