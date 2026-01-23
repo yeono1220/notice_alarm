@@ -55,7 +55,10 @@ pip install -r requirements.txt
 python app/main.py
 
 ```
-
+python app/main.py 안되면 path 설정 - 
+(.venv) PS C:\Users\user\crawler-project> 
+$env:PYTHONPATH += ";."
+python app/main.py
 ---
 
 ## 📡 API 규격 (Interface)

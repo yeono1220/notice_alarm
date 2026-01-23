@@ -69,86 +69,89 @@ else:
     LOG.warning("GEMINI_API_KEY is missing!")
     client = None
 # 전체 크롤링 프로세스를 제어
+# app/jobs/korea_university.py
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
-    global RECIPIENTS_DEFAULT, BOARDS_DEFAULT
+    """
+    최종 진입점: main.py로부터 JSON을 받아 전 프로세스를 제어합니다.
+    """
+    LOG.info("📥 [데이터 수신] 크롤링 프로세스 시작")
     
-    # [LOG] 인풋 데이터 시각화
-    LOG.info("📥 [INCOMING JSON] " + json.dumps(event, ensure_ascii=False))
-    
-    # 1. 인풋 데이터 확보
-    user_id = event.get("userId", "unknown")
+    # 1. 인풋 데이터 파싱 및 프로필 생성
     user_profile = event.get("userProfile", {})
-    profile_summary = user_profile.get("summary", "")
-    target_url = event.get("targetUrl") or BASE_URL_DEFAULT
+    major = user_profile.get("major", "")
+    interests = ", ".join(user_profile.get("interestFields", []))
+    combined_profile = f"전공: {major}, 관심분야: {interests}"
     
+    # [에러 해결] 사용자가 보낸 intervalDays를 가져와서 하위 함수에 전달 준비
+    interval = user_profile.get("intervalDays", 3)
+    
+    target_url = event.get("targetUrl") or BASE_URL_DEFAULT
     base_url = normalize_base(target_url)
     
-    # 2. 크롤링 로직 실행 (기존과 동일)
+    # 대상 게시판 결정
     target_boards = BOARDS_DEFAULT
     for b in BOARDS_DEFAULT:
         if b['category'] in target_url:
             target_boards = [b]
             break
 
-    all_reports = []
+    total_scanned_count = 0 
+    aligned_total = []
+
+    # --- [통합] process_board 함수 없이 여기서 직접 루프를 돕니다 ---
     for board in target_boards:
         try:
-            # [1단계] 게시판 목록 가져오기
+            LOG.info(f"🔎 {board['name']} 게시판 분석 시작...")
+            
+            # [Step 1] 게시판 목록 가져오기
             page_url, html = fetch_board(base_url, board)
             
-            # [2단계] 날짜 필터링을 적용하여 게시글 파싱
-            # (intervalDays를 넘겨주어 '입구 컷' 로직 수행)
+            # [Step 2] 1차 크롤링: 날짜 필터링 적용 (인자 3개 정상 전달)
+            # 이제 parse_posts(html, page_url, interval) 형태로 호출됩니다.
             posts = parse_posts(html, page_url, interval)
+            total_scanned_count += len(posts)
             
-            # [3단계] AI 스코어링 및 상세 내용(OCR 포함) 추출
-            # evaluate_posts 내부에서 score_notice를 호출합니다.
-            aligned, _ = evaluate_posts(user_profile, board["name"], posts)
-            
+            # [Step 3] AI 평가 및 상세 크롤링
+            aligned, _ = evaluate_posts(combined_profile, board["name"], posts)
             aligned_total.extend(aligned)
-            LOG.info(f"📝 {board['name']} 완료: {len(aligned)}건 적합")
             
         except Exception as exc:
-            LOG.error(f"❌ {board['name']} 처리 중 에러: {exc}")
-    # 3. 데이터 매핑
-    aligned_total = []
-    for r in all_reports:
-        aligned_total.extend(r.get("posts", []))
-    
-    aligned_total.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+            LOG.error(f"❌ {board['name']} 처리 중 오류: {exc}")
+            continue
 
-    # 4. 아웃풋 조립
-    if not aligned_total:
-        final_output = {
-            "status": "SUCCESS",
+    # 2. 상태 세분화 및 결과 조립
+    if total_scanned_count == 0:
+        return {
+            "status": "NO_NEW_POSTS",
             "relevanceScore": 0.0,
-            "data": None
+            "data": None,
+            "message": f"최근 {interval}일 동안 새로운 공지가 없습니다."
         }
-    else:
-        best_post = aligned_total[0]
-        final_output = {
-            "status": "SUCCESS",
-            "relevanceScore": best_post.get("relevance_score", 0.0),
-            "data": {
-                "category": best_post.get("category", "공지"),
-                "title": best_post["title"],
-                "sourceName": "고려대학교 정보대학",
-                "summary": best_post.get("reason", "분석 완료"),
-                "originalUrl": best_post["link"],
-                "timestamp": datetime.now(TIMEZONE).isoformat()
-            }
+            
+    if not aligned_total:
+        return {
+            "status": "NO_MATCHING_POSTS",
+            "relevanceScore": 0.0,
+            "data": None,
+            "message": "신규 공지는 있으나 사용자의 관심사와 일치하는 항목이 없습니다."
         }
 
-    # [LOG] 아웃풋 데이터 시각화
-    # 이 로그를 보면 백엔드로 쏴주는 JSON 형태를 바로 확인할 수 있습니다.
-    LOG.info("📤 [OUTGOING JSON] " + json.dumps(final_output, ensure_ascii=False, indent=2))
+    # 성공 시 점수 순 정렬 후 반환
+    aligned_total.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    best_post = aligned_total[0]
     
-    # [추가] 외부 백엔드 URL로 전송 로직 (필요 시 주석 해제)
-    # backend_url = "https://your-api.com/receive"
-    # requests.post(backend_url, json={**final_output, "userId": user_id})
-
-    return final_output
-
-# 입력받은 URL을 크롤링하기 적합한 표준형태로 변환
+    return {
+        "status": "SUCCESS",
+        "relevanceScore": best_post.get("relevance_score", 0.0),
+        "data": {
+            "category": "공지사항",
+            "title": best_post["title"],
+            "sourceName": "고려대학교 정보대학",
+            "summary": best_post.get("reason", "분석 완료"),
+            "originalUrl": best_post["link"],
+            "timestamp": datetime.now(TIMEZONE).isoformat()
+        }
+    }# 입력받은 URL을 크롤링하기 적합한 표준형태로 변환
 def normalize_base(url: str | None) -> str: 
     if not url:
         return BASE_URL_DEFAULT
@@ -164,11 +167,12 @@ def fetch_board(base_url: str, board: dict[str, str]) -> tuple[str, str]:
     resp.raise_for_status()
     return page_url, resp.text
 # HTML에서 공지사항 목록을 추출합니다. interval_days를 기준으로 이전 날짜의 글이 나오면 즉시 중단(break)하여 불필요한 탐색을 방지합니다. 
-def parse_posts(html: str, page_url: str) -> list[dict[str, str]]:
-
+def parse_posts(html: str, page_url: str, interval_days: int) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     today = datetime.now(TIMEZONE).date()
-    cutoff = today - timedelta(days=LOOKBACK_DAYS - 1)
+    
+    # LOOKBACK_DAYS 대신 넘겨받은 interval_days 사용
+    cutoff = today - timedelta(days=interval_days - 1)
     posts: list[dict[str, str]] = []
     
     for row in soup.select("tr"):
