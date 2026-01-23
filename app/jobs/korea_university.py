@@ -5,7 +5,6 @@ import pytesseract
 from PIL import Image
 from io import BytesIO
 import json
-
 import logging
 import sys
 import os
@@ -62,7 +61,6 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # app/jobs/korea_university.py 내 send_kakao 수정
-
 if GEMINI_API_KEY:
     client = genai.Client(api_key=GEMINI_API_KEY)
 else:
@@ -108,12 +106,16 @@ def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             
             # [Step 2] 1차 크롤링: 날짜 필터링 적용 (인자 3개 정상 전달)
             # 이제 parse_posts(html, page_url, interval) 형태로 호출됩니다.
-            posts = parse_posts(html, page_url, interval)
+            posts = parse_posts(html, page_url, interval) 
+            LOG.info(f"수집된 포스트 타입: {type(posts)}") # 로그로 확인용
+
+            # evaluate_posts 호출 시 posts 리스트를 정확히 전달
+            aligned, _ = evaluate_posts(combined_profile, board["name"], posts)
             total_scanned_count += len(posts)
             
             # [Step 3] AI 평가 및 상세 크롤링
-            aligned, _ = evaluate_posts(combined_profile, board["name"], posts)
             aligned_total.extend(aligned)
+            
             
         except Exception as exc:
             LOG.error(f"❌ {board['name']} 처리 중 오류: {exc}")
@@ -139,6 +141,13 @@ def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     # 성공 시 점수 순 정렬 후 반환
     aligned_total.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
     best_post = aligned_total[0]
+
+    # [수정 핵심] 상세 본문(1차+2차 크롤링 결과)을 바탕으로 최종 요약 생성
+    final_summary = summarize_content(
+        user_profile, 
+        best_post["title"], 
+        best_post.get("full_content", "")
+    )
     
     return {
         "status": "SUCCESS",
@@ -147,7 +156,7 @@ def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             "category": "공지사항",
             "title": best_post["title"],
             "sourceName": "고려대학교 정보대학",
-            "summary": best_post.get("reason", "분석 완료"),
+            "summary": final_summary,  # 분석 사유 대신 실제 요약문 삽입
             "originalUrl": best_post["link"],
             "timestamp": datetime.now(TIMEZONE).isoformat()
         }
@@ -223,7 +232,7 @@ def evaluate_posts(profile_text: str, board_name: str, posts: list[dict[str, str
             ocr_combined_text = ""
             for idx, url in enumerate(img_urls):
                 # 이미지별로 순번과 링크를 로그에 남김
-                ocr_result = extract_text_from_image(url, post_copy["link"])
+                ocr_result = extract_text_from_image(url)
                 if ocr_result:
                     ocr_combined_text += f"\n\n--- [이미지 #{idx+1} 텍스트 시작] ---\n{ocr_result}\n--- [이미지 #{idx+1} 텍스트 끝] ---\n"
             
@@ -243,6 +252,7 @@ def evaluate_posts(profile_text: str, board_name: str, posts: list[dict[str, str
     return aligned, evaluated
 # 유저의 전공(major)과 관심 분야(interestFields)를 반영한 프롬프트를 생성하여 AI에게 관련성 점수를 요청합니다.
 def score_notice(profile_text: str, title: str, link: str) -> tuple[float, str]:
+
     if not profile_text: return 0.0, "no-profile"
     
     # [수정] AI에게 점수(0~1)를 직접 요구하여 relevanceScore 생성
@@ -265,6 +275,33 @@ def score_notice(profile_text: str, title: str, link: str) -> tuple[float, str]:
         return float(res_json.get("score", 0.0)), res_json.get("reason", "분석 완료")
     except:
         return 0.0, "AI 분석 실패"
+def summarize_content(user_profile: dict, title: str, full_content: str) -> str:
+    """
+    [2차 분석] 수집된 본문 전체와 OCR 텍스트를 바탕으로 사용자 맞춤 요약을 생성합니다.
+    """
+    if not full_content or len(full_content) < 20:
+        return "상세 본문 내용이 부족하여 요약을 생성할 수 없습니다."
+
+    interests = ", ".join(user_profile.get("interestFields", []))
+    
+    summary_prompt = f"""
+    당신은 공지사항 요약 전문가입니다. 아래의 공지사항 본문을 읽고, 
+    사용자의 관심 분야({interests})를 중심으로 핵심 내용을 3문장 이내로 요약하세요.
+    
+    공지 제목: {title}
+    공지 본문: {full_content}
+    
+    응답은 요약된 문장만 출력하세요. 마크다운 형식을 사용하지 마세요.
+    """
+    # ask_ai 함수를 호출하되, 요약문만 받도록 간단히 처리 (또는 전용 호출 로직 작성)
+    # 여기서는 기존 ask_ai가 JSON을 기대하므로 요약용은 별도 response.text 추출이 필요할 수 있습니다.
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=summary_prompt
+    )
+    return response.text.strip()
+
+
 # genai 클라이언트를 사용하여 Gemini API를 호출하고 결과를 JSON 형태로 파싱하여 반환합니다.
 def ask_ai(prompt: str) -> tuple[float, str]:
     try:
@@ -329,77 +366,62 @@ def ask_ai(prompt: str) -> tuple[float, str]:
         return 0.0, f"failure: {repr(str(e))}"
 # 점수가 높은 게시물의 상세 페이지에 접속하여 본문 텍스트와 이미지 URL 목록을 추출합니다.
 def fetch_post_content(link: str) -> tuple[str, list[str]]:
-    print(f"Fetching post content from: {link}")
+    """본문 텍스트와 이미지 OCR 텍스트를 합쳐서 반환"""
     try:
-        resp = requests.session.get(link, timeout=HTTP_TIMEOUT)
+        # 1. 페이지 요청 (에러 나던 session.get을 requests.get으로 수정)
+        resp = session.get(link, timeout=15)
         resp.encoding = 'utf-8'
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 1. 본문 영역 탐색 (가장 정확한 선택자 순서)
-        # 정보대 게시물은 보통 .view-con 안에 .fr-view가 들어있는 구조입니다.
-        content_area = (
-                soup.select_one(".view-con") or 
-                soup.select_one(".fr-view") or 
-                soup.select_one("#article_text") or # 추가
-                soup.select_one(".board-view-content") # 추가
-            )
+        # 2. 본문 영역 탐색
+        content_area = soup.select_one(".view-con") or soup.select_one(".fr-view")
         
-        if content_area:
-            text = content_area.get_text(" ", strip=True)
-            
-            # 2. 이미지 추출 (보여주신 태그 구조 반영)
-            img_tags = content_area.find_all("img")
-            img_urls = []
-            
-            for img in img_tags:
-                # src와 data-path를 모두 확인
-                src = img.get("src") or img.get("data-path")
+        if not content_area:
+            return "본문을 찾을 수 없습니다.", []
+
+        # 3. 기본 텍스트 추출 (BeautifulSoup)
+        basic_text = content_area.get_text(" ", strip=True)
+        
+        # 4. 이미지 태그에서 OCR 텍스트 추출
+        img_tags = content_area.find_all("img")
+        ocr_combined_text = ""
+        img_urls = []
+        
+        for img in img_tags:
+            src = img.get("src") or img.get("data-path")
+            if src and not any(x in src for x in ["/icon/", "emoji"]):
+                full_url = urljoin(link, src)
+                img_urls.append(full_url)
                 
-                if src:
-                    # 필터링: 에디터 아이콘이나 아주 작은 이미지는 제외 (OCR 효율성)
-                    if any(x in src for x in ["/icon/", "base64", "emoji"]):
-                        continue
-                    
-                    # 상대 경로(/_res/...)를 절대 경로로 결합
-                    # urljoin은 link가 https://info.korea.ac.kr/... 이므로 알아서 합쳐줍니다.
-                    full_url = urljoin(link, src)
-                    img_urls.append(full_url)
-            
-            LOG.info(f"✅ 이미지 감지 성공: {len(img_urls)}개 발견 (URL: {link})")
-            return text, img_urls
-            
-        LOG.warning(f"⚠️ 본문 영역 탐색 실패: {link}")
-        return "본문을 찾을 수 없습니다.", []
+                # 이미지에서 글자 읽어오기 (OCR 실행)
+                ocr_result = extract_text_from_image(full_url)
+                if ocr_result:
+                    ocr_combined_text += f"\n[이미지 포함 내용]: {ocr_result}"
+
+        # 5. 일반 텍스트 + OCR 텍스트 합체
+        final_full_content = (basic_text + ocr_combined_text).strip()
+        
+        return final_full_content, img_urls
         
     except Exception as e:
-        LOG.error(f"❌ 2차 크롤링 에러: {e}")
-        return f"에러 발생: {e}", []
-    
-def extract_text_from_image(img_url: str, parent_link: str) -> str:
+        LOG.error(f"❌ 2차 크롤링(OCR 포함) 에러: {e}")
+        return "콘텐츠 로드 실패", []    
+def extract_text_from_image(img_url: str) -> str:
+    """이미지 URL에서 텍스트를 추출하는 OCR 함수"""
     try:
-        resp = session.get(img_url, timeout=HTTP_TIMEOUT)
-        # 로그에 원본 게시글 링크(parent_link)를 포함하여 출력
-        LOG.info(f"📸 이미지 다운로드 시도: {img_url} (출처: {parent_link})")
-        LOG.info(f"   └ 응답: {resp.status_code}, 타입: {resp.headers.get('Content-Type')}")
-
+        # session 대신 requests.get 사용 (에러 방지)
+        resp = session.get(img_url, timeout=15)
         if "image" not in resp.headers.get("Content-Type", "").lower():
-            LOG.error(f"   └ 실패: 이미지가 아님 ({img_url})")
             return ""
 
         img = Image.open(BytesIO(resp.content))
-        processed = preprocess_for_ocr(img)
-
-        text = pytesseract.image_to_string(
-            processed,
-            lang="kor+eng",
-            config="--oem 3 --psm 6"
-        )
-        LOG.info(f"   └ OCR 처리 완료 (글자 수: {len(text.strip())})")
+        # 과거 코드에 있던 OCR 처리 로직
+        text = pytesseract.image_to_string(img, lang="kor+eng", config="--oem 3 --psm 6")
         return text.strip()
     except Exception as e:
-        LOG.error(f"   └ OCR 실패 ({img_url}): {e}")
-        return ""  
+        LOG.error(f"❌ OCR 실패: {e}")
+        return ""
 def preprocess_for_ocr(pil_img: Image.Image) -> Image.Image:
     img = np.array(pil_img)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
