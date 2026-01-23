@@ -69,98 +69,61 @@ else:
 # 전체 크롤링 프로세스를 제어
 # app/jobs/korea_university.py
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
-    """
-    최종 진입점: main.py로부터 JSON을 받아 전 프로세스를 제어합니다.
-    """
     LOG.info("📥 [데이터 수신] 크롤링 프로세스 시작")
     
-    # 1. 인풋 데이터 파싱 및 프로필 생성
+    # 1. 인풋 데이터 파싱
     user_profile = event.get("userProfile", {})
-    major = user_profile.get("major", "")
-    interests = ", ".join(user_profile.get("interestFields", []))
+    major = user_profile.get("major", "컴퓨터학과")  # 기본값 설정
+    interest_list = user_profile.get("interestFields", [])
+
+    if not interest_list:
+        interest_list = ["AI", "채용", "장학금", "인턴십"] # 기본 관심사 설정
+
+    interests = ", ".join(interest_list)
     combined_profile = f"전공: {major}, 관심분야: {interests}"
-    
-    # [에러 해결] 사용자가 보낸 intervalDays를 가져와서 하위 함수에 전달 준비
-    interval = user_profile.get("intervalDays", 3)
-    
-    target_url = event.get("targetUrl") or BASE_URL_DEFAULT
-    base_url = normalize_base(target_url)
-    
-    # 대상 게시판 결정
-    target_boards = BOARDS_DEFAULT
-    for b in BOARDS_DEFAULT:
-        if b['category'] in target_url:
-            target_boards = [b]
-            break
 
-    total_scanned_count = 0 
-    aligned_total = []
-
-    # --- [통합] process_board 함수 없이 여기서 직접 루프를 돕니다 ---
-    for board in target_boards:
+    LOG.info(f"👤 분석용 프로필 생성 완료: {combined_profile}") # 로그로 확인 필수!    
+    # 설정값 로드
+    interval = user_profile.get("intervalDays", 30)
+    raw_url = event.get("targetUrl") or BASE_URL_DEFAULT
+    # 주소를 무조건 '.../board/' 형태로 정규화
+    base_url = normalize_base(raw_url)
+    
+    all_board_results = []
+    all_final_data = [] # 모든 게시판의 추천 공지를 모을 리스트
+    total_found_posts = 0
+    total_scanned = 0
+    # 2. 각 게시판을 '배치 방식'으로 한 번만 순회
+    for board in BOARDS_DEFAULT:
         try:
-            LOG.info(f"🔎 {board['name']} 게시판 분석 시작...")
+            LOG.info(f"🚀 {board['name']} 게시판 배치 크롤링 시작 (기간: {interval}일)")
             
-            # [Step 1] 게시판 목록 가져오기
-            page_url, html = fetch_board(base_url, board)
+            # [수정] 신규 배치 함수만 호출합니다. 
+            # (함수 내부에서 fetch_board, parse_posts, 배치 AI 분석, 알림까지 한 번에 처리하도록 설계)
+            result = process_board_batch(board, base_url, combined_profile, RECIPIENTS_DEFAULT, interval)
             
-            # [Step 2] 1차 크롤링: 날짜 필터링 적용 (인자 3개 정상 전달)
-            # 이제 parse_posts(html, page_url, interval) 형태로 호출됩니다.
-            posts = parse_posts(html, page_url, interval) 
-            LOG.info(f"수집된 포스트 타입: {type(posts)}") # 로그로 확인용
-
-            # evaluate_posts 호출 시 posts 리스트를 정확히 전달
-            aligned, _ = evaluate_posts(combined_profile, board["name"], posts)
-            total_scanned_count += len(posts)
-            
-            # [Step 3] AI 평가 및 상세 크롤링
-            aligned_total.extend(aligned)
-            
-            
+            all_board_results.append(result)
+            if result.get("status") == "SUCCESS":
+                all_final_data.extend(result.get("data", []))
+                total_scanned += 1            # 검색된 포스트 수 합산 (결과 메시지용)
+                
         except Exception as exc:
             LOG.error(f"❌ {board['name']} 처리 중 오류: {exc}")
             continue
 
-    # 2. 상태 세분화 및 결과 조립
-    if total_scanned_count == 0:
-        return {
-            "status": "NO_NEW_POSTS",
-            "relevanceScore": 0.0,
-            "data": None,
-            "message": f"최근 {interval}일 동안 새로운 공지가 없습니다."
-        }
-            
-    if not aligned_total:
+    # 3. 최종 상태 반환
+    if not all_final_data:
         return {
             "status": "NO_MATCHING_POSTS",
-            "relevanceScore": 0.0,
-            "data": None,
-            "message": "신규 공지는 있으나 사용자의 관심사와 일치하는 항목이 없습니다."
+            "message": f"최근 {interval}일 동안 분석을 완료했으나, 추천할만한 새 공지가 없습니다."
         }
 
-    # 성공 시 점수 순 정렬 후 반환
-    aligned_total.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
-    best_post = aligned_total[0]
-
-    # [수정 핵심] 상세 본문(1차+2차 크롤링 결과)을 바탕으로 최종 요약 생성
-    final_summary = summarize_content(
-        user_profile, 
-        best_post["title"], 
-        best_post.get("full_content", "")
-    )
-    
     return {
         "status": "SUCCESS",
-        "relevanceScore": best_post.get("relevance_score", 0.0),
-        "data": {
-            "category": "공지사항",
-            "title": best_post["title"],
-            "sourceName": "고려대학교 정보대학",
-            "summary": final_summary,  # 분석 사유 대신 실제 요약문 삽입
-            "originalUrl": best_post["link"],
-            "timestamp": datetime.now(TIMEZONE).isoformat()
-        }
-    }# 입력받은 URL을 크롤링하기 적합한 표준형태로 변환
+        "total_boards": total_scanned,
+        "recommend_count": len(all_final_data),
+        "data": all_final_data # 여기에 AI가 요약한 진짜 데이터가 담깁니다!
+    }
 def normalize_base(url: str | None) -> str: 
     if not url:
         return BASE_URL_DEFAULT
@@ -175,7 +138,146 @@ def fetch_board(base_url: str, board: dict[str, str]) -> tuple[str, str]:
     resp = session.get(page_url, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
     return page_url, resp.text
-# HTML에서 공지사항 목록을 추출합니다. interval_days를 기준으로 이전 날짜의 글이 나오면 즉시 중단(break)하여 불필요한 탐색을 방지합니다. 
+
+def extract_text_from_image(img_url: str) -> str:
+    """이미지 URL에서 텍스트 추출 (인자 1개로 통일)"""
+    try:
+        resp = session.get(img_url, timeout=10)
+        img = Image.open(BytesIO(resp.content))
+        return pytesseract.image_to_string(img, lang="kor+eng").strip()
+    except Exception:
+        return ""
+
+def fetch_post_content(link: str) -> str:
+    """본문과 OCR 텍스트를 합쳐서 반환"""
+    try:
+        resp = session.get(link, timeout=15)
+        resp.encoding = 'utf-8'
+        soup = BeautifulSoup(resp.text, "html.parser")
+        content_area = soup.select_one(".view-con") or soup.select_one(".fr-view")
+        
+        if not content_area: return ""
+        
+        basic_text = content_area.get_text(" ", strip=True)
+        img_tags = content_area.find_all("img")
+        ocr_text = ""
+        for img in img_tags:
+            src = img.get("src")
+            if src:
+                ocr_text += "\n" + extract_text_from_image(urljoin(link, src))
+        
+        return (basic_text + ocr_text).strip()
+    except Exception as e:
+        LOG.error(f"❌ 본문 추출 실패: {e}")
+        return ""
+
+# --- 핵심: 팀장님 스타일의 배치 처리 함수 ---
+def process_board_batch(board, base_url, profile_text, recipients, interval):
+    try:
+        # 1. 1차 크롤링 (목록 수집)
+        page_url, html = fetch_board(base_url, board)
+        posts = parse_posts(html, page_url, interval) 
+        
+        if not posts: 
+            return {"board": board['name'], "status": "NO_POSTS", "posts_count": 0}
+
+        # 2. [배치 호출 1] 제목 리스트 필터링
+        titles_block = "\n".join([f"{i}. {p['title']}" for i, p in enumerate(posts)])
+        filter_prompt = f"""
+        [경고: 반드시 준수] 
+        1. 대화 금지, 설명 금지. 
+        2. 오직 JSON 리스트 형식([번호, 번호])만 출력해.
+        3. 예: [1, 3]
+
+        사용자 프로필: {profile_text}
+        목록:
+        {titles_block}
+
+        번호: """
+
+        filter_res_raw = ask_ai(filter_prompt)
+        
+        # 데이터 타입 방어 (리스트/튜플/문자열 처리)
+        if isinstance(filter_res_raw, list):
+            selected_indices = filter_res_raw
+        else:
+            filter_res_str = str(filter_res_raw[0] if isinstance(filter_res_raw, tuple) else filter_res_raw)
+            selected_indices = [int(i) for i in re.findall(r'\d+', filter_res_str)]
+
+        if not selected_indices:
+            return {"board": board['name'], "status": "NO_MATCH", "posts_count": len(posts)}
+
+        # 3. 선택된 공지만 2차 크롤링 (본문/OCR 수집)
+        targeted_data = []
+        for idx in selected_indices:
+            if idx < len(posts):
+                # fetch_post_content가 2개의 값을 반환한다고 가정 (내용, 이미지목록)
+                # 만약 에러가 난다면 content = fetch_post_content(...)로 수정하세요.
+                content_res = fetch_post_content(posts[idx]['link'])
+                content = content_res[0] if isinstance(content_res, tuple) else content_res
+                
+                targeted_data.append({
+                    "title": posts[idx]['title'], 
+                    "link": posts[idx]['link'], 
+                    "content": content
+                })
+
+        # 4. [배치 호출 2] 통합 요약
+        summary_input = ""
+        for i, d in enumerate(targeted_data):
+            summary_input += f"\n[ID:{i}]\n제목: {d['title']}\n본문: {d['content']}\n"
+
+        summary_prompt = f"""
+        사용자 프로필({profile_text})에 맞춰 다음 공지들을 각각 요약해줘. 
+        반드시 아래 JSON 리스트 형식으로 응답해.
+        [
+          {{"id": 번호, "summary": "요약내용", "title": "원본제목"}}
+        ]
+        내용:
+        {summary_input}
+        """
+        
+        summaries = ask_ai(summary_prompt)
+
+        # 문자열로 왔을 경우를 대비한 파싱 방어
+        if isinstance(summaries, str):
+            try:
+                match = re.search(r'(\[.*\]|\{.*\})', summaries, re.DOTALL)
+                summaries = json.loads(match.group(1)) if match else []
+            except:
+                summaries = []
+
+        # 5. 개별 알림 발송
+        sent_count = 0
+        if isinstance(summaries, list):
+            for s in summaries:
+                # 제목 매칭으로 원본 링크 찾기
+                target_title = s.get('title', '')
+                original_post = next((p for p in targeted_data if target_title in p['title']), None)
+                article_link = original_post['link'] if original_post else ""
+                
+                for target in recipients:
+                    params = {
+                        "korean-title": f"[{board['name']}] {target_title}",
+                        "customer-name": target["name"],
+                        "article-link": article_link,
+                        "summary": s.get('summary', '내용 요약 실패')
+                    }
+                    send_kakao(target["contact"], TEMPLATE_CODE, params)
+                    sent_count += 1
+
+        return {
+            "board": board['name'], 
+            "status": "SUCCESS", 
+            "posts_count": len(posts), 
+            "matched_count": len(summaries) if isinstance(summaries, list) else 0,
+            "sent_count": sent_count
+        }
+
+    except Exception as e:
+        LOG.exception(f"❌ {board['name']} 배치 처리 중 치명적 오류: {e}")
+        return {"board": board['name'], "status": "ERROR", "error": str(e), "posts_count": 0}
+    # HTML에서 공지사항 목록을 추출합니다. interval_days를 기준으로 이전 날짜의 글이 나오면 즉시 중단(break)하여 불필요한 탐색을 방지합니다. 
 def parse_posts(html: str, page_url: str, interval_days: int) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     today = datetime.now(TIMEZONE).date()
@@ -303,212 +405,119 @@ def summarize_content(user_profile: dict, title: str, full_content: str) -> str:
 
 
 # genai 클라이언트를 사용하여 Gemini API를 호출하고 결과를 JSON 형태로 파싱하여 반환합니다.
-def ask_ai(prompt: str) -> tuple[float, str]:
+def ask_ai(prompt: str) -> list | dict | str:
+    """
+    Google GenAI SDK 전용 ask_ai (튜플 및 JSON 마크다운 완벽 방어)
+    """
     try:
-        LOG.info("=== [AI CALL START] ===")
-        
-        # 1. 프롬프트 유니코드 안전화 (UTF-8 강제)
-        # 만약 prompt가 유니코드가 아니라면 강제로 utf-8로 변환합니다.
-        if isinstance(prompt, bytes):
-            safe_prompt = prompt.decode('utf-8')
-        else:
-            safe_prompt = str(prompt)
-
-        if not client:
-            LOG.error("❌ 에러: Gemini Client가 설정되지 않았습니다.")
-            return 0.0, "no-client"
-
-        # 2. Gemini 모델 호출 (168라인 부근)
-        LOG.info(f"🤖 Calling model: gemini-2.0-flash... (Prompt size: {len(safe_prompt)})")
-        # [핵심] 런타임에서 인코딩 에러를 방지하기 위해 
-        # 시스템 환경이d 깨져있어도 라이브러리가 UTF-8을 사용하도록 유도합니다.
+        # 1. 모델 호출 (본인의 모델명에 맞게 수정하세요. 예: 'gemini-2.0-flash')
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=safe_prompt, 
-            config={
-                'tools': [],
-                'automatic_function_calling': {'disable': True}
-            }
+            model='gemini-2.0-flash',
+            contents=prompt
         )
-        print(4)
-        # 3. 응답 처리 및 로그 출력 시 인코딩 방어
-        # response.text가 한글일 때 LOG.info에서 터지는 것을 repr()로 방어합니다.
-        raw_text = response.text if response.text else ""
-        LOG.info(f"📥 Raw Response Received: {repr(raw_text)}")
 
-        if not raw_text.strip():
-            LOG.warning("⚠️ AI 응답이 비어있습니다.")
-            return 0.0, "empty-response"
-
-        # 4. JSON 파싱
-        LOG.info("🧩 Parsing JSON from response...")
-        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-        
-        if json_match:
-            clean_json = json_match.group(0)
-            data = json.loads(clean_json)
-            score = float(data.get("score", 0.0))
-            reason = data.get("reason", "분석 완료")
-            
-            # 사유(reason) 출력 시에도 repr() 사용
-            LOG.info(f"🎯 Analysis Result - Score: {score}, Reason: {repr(reason)}")
-            LOG.info("=== [AI CALL SUCCESS] ===")
-            return score, reason
+        # 2. 텍스트 추출 (response가 튜플로 올 경우를 대비한 방어 로직)
+        if isinstance(response, tuple):
+            full_text = str(response[0].text)
         else:
-            LOG.error(f"❌ JSON 패턴을 찾을 수 없습니다. 원문: {repr(raw_text)}")
-            raise ValueError("JSON format not found in response")
+            full_text = str(response.text)
+        
+        full_text = full_text.strip()
 
-    except Exception as e:
-        # 에러 메시지 자체(예: '본인의_키')를 출력하다 터지지 않게 repr(e) 처리
-        LOG.error(f"💥 Critical Error in ask_ai: {repr(e)}")
-        import traceback
-        LOG.error(traceback.format_exc())
-        return 0.0, f"failure: {repr(str(e))}"
-# 점수가 높은 게시물의 상세 페이지에 접속하여 본문 텍스트와 이미지 URL 목록을 추출합니다.
-def fetch_post_content(link: str) -> tuple[str, list[str]]:
-    """본문 텍스트와 이미지 OCR 텍스트를 합쳐서 반환"""
-    try:
-        # 1. 페이지 요청 (에러 나던 session.get을 requests.get으로 수정)
-        resp = session.get(link, timeout=15)
-        resp.encoding = 'utf-8'
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
-        # 2. 본문 영역 탐색
-        content_area = soup.select_one(".view-con") or soup.select_one(".fr-view")
-        
-        if not content_area:
-            return "본문을 찾을 수 없습니다.", []
-
-        # 3. 기본 텍스트 추출 (BeautifulSoup)
-        basic_text = content_area.get_text(" ", strip=True)
-        
-        # 4. 이미지 태그에서 OCR 텍스트 추출
-        img_tags = content_area.find_all("img")
-        ocr_combined_text = ""
-        img_urls = []
-        
-        for img in img_tags:
-            src = img.get("src") or img.get("data-path")
-            if src and not any(x in src for x in ["/icon/", "emoji"]):
-                full_url = urljoin(link, src)
-                img_urls.append(full_url)
-                
-                # 이미지에서 글자 읽어오기 (OCR 실행)
-                ocr_result = extract_text_from_image(full_url)
-                if ocr_result:
-                    ocr_combined_text += f"\n[이미지 포함 내용]: {ocr_result}"
-
-        # 5. 일반 텍스트 + OCR 텍스트 합체
-        final_full_content = (basic_text + ocr_combined_text).strip()
-        
-        return final_full_content, img_urls
-        
-    except Exception as e:
-        LOG.error(f"❌ 2차 크롤링(OCR 포함) 에러: {e}")
-        return "콘텐츠 로드 실패", []    
-def extract_text_from_image(img_url: str) -> str:
-    """이미지 URL에서 텍스트를 추출하는 OCR 함수"""
-    try:
-        # session 대신 requests.get 사용 (에러 방지)
-        resp = session.get(img_url, timeout=15)
-        if "image" not in resp.headers.get("Content-Type", "").lower():
-            return ""
-
-        img = Image.open(BytesIO(resp.content))
-        # 과거 코드에 있던 OCR 처리 로직
-        text = pytesseract.image_to_string(img, lang="kor+eng", config="--oem 3 --psm 6")
-        return text.strip()
-    except Exception as e:
-        LOG.error(f"❌ OCR 실패: {e}")
-        return ""
-def preprocess_for_ocr(pil_img: Image.Image) -> Image.Image:
-    img = np.array(pil_img)
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-    return Image.fromarray(thresh)
-def send_kakao(contact: str, template_code: str, template_param: dict[str, str]) -> dict[str, Any]:
-    payload = {
-        "senderKey": SENDER_KEY,
-        "templateCode": template_code,
-        "recipientList": [{"recipientNo": contact, "templateParameter": template_param}],
-    }
-    headers = {"X-Secret-Key": SECRET_KEY, "Content-Type": "application/json;charset=UTF-8"}
-    url = f"https://api-alimtalk.cloud.toast.com/alimtalk/v2.2/appkeys/{APP_KEY}/messages"
-    
-    try:
-        # [수정] POST 요청이 먼저 와야 합니다.
-        resp = session.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
-        # [수정] 그 후에 로그를 찍어야 NameError가 발생하지 않습니다.
-        LOG.info(f"Kakao API 응답 상태: {resp.status_code}")
-        LOG.info(f"Kakao API 응답 본문: {resp.text}")
-        if resp.status_code != 200:
-            LOG.error("Kakao send failed (%s) %s", resp.status_code, resp.text)
-            return {"error": "API_STATUS_ERROR", "status": resp.status_code}
+        # 3. JSON 추출 (마크다운 ```json ... ``` 제거)
+        if '[' in full_text or '{' in full_text:
+            # 정규표현식으로 JSON 블록만 추출
+            match = re.search(r'(\[.*\]|\{.*\})', full_text, re.DOTALL)
+            if match:
+                clean_json = match.group(1)
+                try:
+                    return json.loads(clean_json)
+                except json.JSONDecodeError:
+                    LOG.error(f"❌ JSON 파싱 실패 (원문): {full_text[:100]}")
+                    return full_text # 실패 시 텍스트라도 반환
             
-        return resp.json() if "application/json" in resp.headers.get("Content-Type", "") else {"status": resp.status_code}
+        return full_text
+
     except Exception as e:
-        LOG.error("Kakao connection error: %s", e)
-        return {"error": str(e)}
-
-
-
-
-
-
-
-
-
-
-    results: list[dict[str, Any]] = []
-    for post in posts:
-        title_prefix = "[적합]" if post.get("aligned") else ""
-        title = f"{title_prefix} 고려대 정보대 공지 ({board['name']})\n\n{post['title']}"
-        
-        for target in recipients:
-            params = {
-                "korean-title": title,
-                "customer-name": target["name"],
-                "article-link": post["link"],
-            }
-            try:
-                data = send_kakao(target["contact"], TEMPLATE_CODE, params)
-                results.append({
-                    "board": board["name"],
-                    "title": post["title"],
-                    "recipient": target["contact"],
-                    "status": data,
-                })
-            except Exception as exc:
-                LOG.exception("Kakao send error: %s", exc)
-                results.append({
-                    "board": board["name"],
-                    "title": post["title"],
-                    "recipient": target["contact"],
-                    "error": str(exc),
-                })
-    return results
-
-
+        LOG.error(f"💥 ask_ai 호출 중 에러 발생: {e}")
+        # 리스트가 필요한 프롬프트면 빈 리스트, 아니면 빈 문자열 반환
+        return [] if "리스트" in prompt or "[" in prompt else ""# 점수가 높은 게시물의 상세 페이지에 접속하여 본문 텍스트와 이미지 URL 목록을 추출합니다.
+# [korea_university.py] 함수의 첫 줄
+def process_board_batch(board, base_url, profile_text, recipients, interval):
     try:
+        # 1. 1차 크롤링 (전달받은 interval 사용)
         page_url, html = fetch_board(base_url, board)
-        posts = parse_posts(html, page_url)
-        aligned, evaluated = evaluate_posts(profile_text, board["name"], posts)
+        posts = parse_posts(html, page_url, interval) 
+        
+        # ... (나머지 로직 동일)        posts = parse_posts(html, page_url, interval) 
+        
+        if not posts: 
+            return {"board": board['name'], "status": "NO_POSTS", "data": []}
 
-        print(profile_text,"ddddddddddddddddddddddddddddddddd", board["name"], posts)
-        LOG.info(f"📝 {board['name']} 평가 완료: 총 {len(posts)}건 중 {len(aligned)}건 적합")
-    except Exception as exc:
-        LOG.info("Board fetch error for %s: %s", board["name"], exc)
+        # 2. [배치 호출 1] 제목 리스트 필터링
+        titles_block = "\n".join([f"{i}. {p['title']}" for i, p in enumerate(posts)])
+        filter_prompt = f"프로필: {profile_text}\n목록:\n{titles_block}\n관심 번호만 JSON 리스트로 응답."
 
-        return {"board": board["name"], "error": str(exc), "posts": [], "sent": [], "evaluated": []}
-    
-    # [설정] 카카오 전송을 잠시 막고 싶을 때 아래를 주석 처리합니다.
-    # sent = notify(board, aligned, recipients) TODO 
-    sent = [] 
-    LOG.info(f"📢 [전송 스킵] {board['name']} 적합 공지 {len(aligned)}건 수집 완료")
-    
-    return {"board": board["name"], "posts": aligned, "sent": sent, "evaluated": evaluated}
+        filter_res = ask_ai(filter_prompt)
+        
+        # 타입 방어
+        if isinstance(filter_res, list):
+            selected_indices = filter_res
+        else:
+            filter_res_str = str(filter_res[0] if isinstance(filter_res, tuple) else filter_res)
+            selected_indices = [int(i) for i in re.findall(r'\d+', filter_res_str)]
 
+        if not selected_indices:
+            return {"board": board['name'], "status": "NO_MATCH", "data": []}
+
+        # 3. 선택된 공지만 2차 크롤링 (본문/OCR 수집)
+        targeted_data = []
+        for idx in selected_indices:
+            if idx < len(posts):
+                content_res = fetch_post_content(posts[idx]['link'])
+                content = content_res[0] if isinstance(content_res, tuple) else content_res
+                targeted_data.append({
+                    "title": posts[idx]['title'], 
+                    "link": posts[idx]['link'], 
+                    "content": content
+                })
+
+        # 4. [배치 호출 2] 통합 요약
+        summary_input = "".join([f"\n[ID:{i}] 제목:{d['title']}\n본문:{d['content']}\n" for i, d in enumerate(targeted_data)])
+        summary_prompt = f"프로필({profile_text})에 맞춰 각 공지를 요약해. JSON 리스트 [{{'title':'', 'summary':''}}] 형식으로 응답.\n내용:\n{summary_input}"
+        
+        summaries = ask_ai(summary_prompt)
+
+        # 문자열로 왔을 경우 파싱 시도
+        if isinstance(summaries, str):
+            try:
+                match = re.search(r'(\[.*\]|\{.*\})', summaries, re.DOTALL)
+                summaries = json.loads(match.group(1)) if match else []
+            except:
+                summaries = []
+
+        # 5. 결과 조립 (백엔드에 전달할 데이터)
+        final_data = []
+        if isinstance(summaries, list):
+            for s in summaries:
+                t_title = s.get('title', '공지')
+                orig = next((p for p in targeted_data if t_title in p['title']), None)
+                final_data.append({
+                    "board_name": board['name'],
+                    "title": t_title,
+                    "summary": s.get('summary', ''),
+                    "link": orig['link'] if orig else ""
+                })
+
+        return {
+            "board": board['name'],
+            "status": "SUCCESS",
+            "data": final_data # 백엔드가 가져갈 핵심 데이터
+        }
+
+    except Exception as e:
+        LOG.exception(f"❌ {board['name']} 처리 실패: {e}")
+        return {"board": board['name'], "status": "ERROR", "data": []}
 # 크롤링 대상 게시판 정의 (코드 상단에 없다면 추가하세요)
 
 if __name__ == "__main__":
