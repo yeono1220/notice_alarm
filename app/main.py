@@ -1,68 +1,91 @@
-from fastapi import FastAPI, Request
-import uvicorn
 import os
-import sys
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field # Field 추가: 유효성 검사 및 설명용
-from typing import Any, Dict, List
+import requests
+import uvicorn
+from datetime import datetime, timezone
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import Dict, Any, List, Optional
 
-# 기존 jobs 경로에 있는 run 함수를 가져옵니다.
-from app.jobs.korea_university import run
+# 기존 임포트 경로 유지
+from app.jobs.korea_university import run 
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- 1. 입력 데이터 구조 정의 (Pydantic 모델) ---
+# 1. 백엔드 명세서(이미지)와 100% 일치시킨 데이터 모델
 class UserProfile(BaseModel):
-    # 실제 연동 시: Optional을 써서 데이터가 없어도 에러가 나지 않게 하거나, 
-    # 기본값을 제거하여 필수값으로 지정할 수 있습니다.
     username: str
-    school: str = "이화여자대학교"
+    phoneNumber: str
+    school: str
     major: str
     interestFields: List[str]
-    intervalDays: int = 3 # 알림 주기 (lookback 기간으로 활용)
-    alarmTime: str = "09:30:00"
+    intervalDays: int  # JSON의 Long은 Python의 int로 대응됩니다.
+    alarmTime: str
 
-class CrawlRequest(BaseModel):
-    # 실제 연동 시: 백엔드에서 넘겨줄 실제 필드명과 일치시켜야 합니다.
-    userId: str = Field(..., description="사용자 식별 고유 ID")
-    targetUrl: str = Field(..., description="크롤링 대상 게시판 URL")
-    userProfile: UserProfile # 중첩 모델을 사용하여 구조를 체계화합니다.
-    config: Dict[str, Any] = {"language": "Korean"}
+class CallbackConfig(BaseModel):
+    enabled: bool = True
+    callbackUrl: str
+    authToken: str
 
-@app.get("/")
-def root():
-    return {"message": "Crawler Service is Running"}
-
-# --- 2. 엔드포인트 ---
-@app.post("/crawl")
-async def handle_crawl(request_data: CrawlRequest): 
-    """
-    실제 JSON 수신 프로세스:
-    1. 외부(Cloud Scheduler/BE)에서 POST 요청을 보냄 (Body에 JSON 포함)
-    2. FastAPI가 CrawlRequest 모델에 맞춰 JSON 파싱 및 유효성 검사 실시
-    3. 검사 통과 시 아래 로직 실행, 실패 시 422 Unprocessable Entity 에러 자동 반환
-    """
+class BatchRequest(BaseModel):
+    userId: str
+    targetUrl: str
+    userProfile: UserProfile
+    summary: str
+    callback: CallbackConfig
+@app.post("/crawl/request")
+async def handle_crawl(request_data: BatchRequest):
     try:
-        # pydantic 모델을 dict로 변환 (기존 run 함수와의 호환성)
-        event = request_data.model_dump() 
+        data_dict = request_data.model_dump()
         
-        # 실제 운영 팁: run 함수 내부에서 event['userProfile']['intervalDays']를 사용하여
-        # '오늘 - intervalDays' 날짜 이후의 게시물만 필터링하도록 로직을 보강하세요.
+        # [핵심] run 함수가 event.get("userProfile")을 사용하므로 키 이름을 맞춰줍니다.
+        event = {
+            "userId": data_dict["userId"],
+            "targetUrl": data_dict["targetUrl"],
+            "userProfile": data_dict["userProfile"], # 'profile'이 아니라 'userProfile'로 전달
+            "callbackUrl": data_dict["callback"]["callbackUrl"]
+        }
+        
+        print(f"DEBUG: Passing event to run: {event}")
         result = run(event)
         
-        return result
-    except Exception as e:
-        # 실전: 로그 시스템(GCP Cloud Logging 등)에 에러를 남기는 것이 중요합니다.
-        print(f"Error occurred: {str(e)}")
-        return {"status": "ERROR", "message": "Internal Server Error"}
+        # [방어 코드] result가 None이거나 실패한 경우 처리
+        if not result or result.get("status") != "SUCCESS":
+            msg = result.get("message") if result else "결과 없음"
+            print(f"⚠️ 크롤러 응답 미흡: {msg}")
+            return {"status": "SKIPPED", "message": msg}
 
+        # [데이터 전송] run 함수의 리턴 구조(단일 dict)에 맞춰 callback 실행
+        if data_dict["callback"]["enabled"]:
+            # run 함수는 이미 'data' 안에 dict를 담아 보내주므로 그대로 전달하거나 가공
+            send_to_callback(
+                data_dict["callback"]["callbackUrl"],
+                data_dict["userId"],
+                result
+            )
+            
+        return {"status": "SUCCESS", "message": "프로세스 완료"}
+        
+    except Exception as e:
+        print(f"💥 상세 에러: {str(e)}")
+        return {"status": "ERROR", "message": str(e)}
+
+def send_to_callback(callback_url: str, user_id: str, result: dict):
+    """최종 규격에 맞춰 백엔드로 전송"""
+    # run 함수가 이미 'data'에 필요한 필드를 채워서 줍니다.
+    item = result.get("data") 
+    if not item: return
+
+    payload = {
+        "status": "SUCCESS",
+        "relevanceScore": result.get("relevanceScore", 0.0),
+        "data": item # 이미 category, title, summary, originalUrl 등이 들어있음
+    }
+
+    try:
+        requests.post(callback_url, json=payload, timeout=30)
+        print("🚀 [Callback] 전송 완료")
+    except Exception as e:
+        print(f"❌ [Callback] 실패: {e}")
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info")
