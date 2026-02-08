@@ -73,22 +73,33 @@ async def handle_crawl(request_data: BatchRequest):
         print(f"💥 상세 에러: {str(e)}")
         return {"status": "ERROR", "message": str(e)}
 
-def send_to_callback(callback_url: str, user_id: str, result: dict):
-    # 백엔드가 '관리'할 수 있도록 URL 끝에 requestId를 동적으로 생성해서 붙여줍니다.
-    # 예: https://api.allyeojujob.com/ai/callback/2024001_0129
-    request_id = f"{user_id}_{datetime.now().strftime('%m%d%H%M')}"
-    final_url = f"{callback_url.rstrip('/')}/{request_id}" 
-
+def send_to_callback(callback_url: str, result: dict, auth_token: str):
+    """
+    백엔드가 이미 {requestId}를 포함해 완성해서 준 callback_url을 
+    수정 없이 그대로 사용하여 결과를 전송합니다.
+    """
+    # 1. 페이로드 구성 (백엔드 수신 규격)
     payload = {
         "status": "SUCCESS",
         "relevanceScore": result.get("relevanceScore", 0.0),
         "data": result.get("data")
     }
 
+    # 2. 헤더 구성 (authToken이 있다면 함께 전송)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}" # 보안을 위해 토큰 추가
+    }
+
     try:
-        # 완성된 final_url로 전송해야 백엔드가 404 에러를 내지 않습니다.
-        requests.post(final_url, json=payload, timeout=30)
-        print(f"🚀 [Callback] 전송 완료: {final_url}")
+        # 가공하지 않은 callback_url 그대로 POST!
+        response = requests.post(
+            callback_url, 
+            json=payload, 
+            headers=headers, 
+            timeout=30
+        )
+        print(f"🚀 [Callback] 전송 완료: {callback_url} (Status: {response.status_code})")
     except Exception as e:
         print(f"❌ [Callback] 실패: {e}")
 if __name__ == "__main__":
