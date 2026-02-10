@@ -3,7 +3,7 @@ import requests
 import uvicorn
 from datetime import datetime, timezone
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
 # 기존 임포트 경로 유지
@@ -23,8 +23,12 @@ class UserProfile(BaseModel):
 
 class CallbackConfig(BaseModel):
     enabled: bool = True
-    callbackUrl: str
+    callbackUrl: str = Field(
+        default="https://api.allyeojujob.com/ai/callback",
+        description="백엔드 알림 수신 기본 주소"
+    )
     authToken: str
+    
 
 class BatchRequest(BaseModel):
     userId: str
@@ -59,7 +63,6 @@ async def handle_crawl(request_data: BatchRequest):
             # run 함수는 이미 'data' 안에 dict를 담아 보내주므로 그대로 전달하거나 가공
             send_to_callback(
                 data_dict["callback"]["callbackUrl"],
-                data_dict["userId"],
                 result
             )
             
@@ -68,22 +71,36 @@ async def handle_crawl(request_data: BatchRequest):
     except Exception as e:
         print(f"💥 상세 에러: {str(e)}")
         return {"status": "ERROR", "message": str(e)}
+def send_to_callback(callback_url: str, result: dict):
+    # 1. 은서님이 주신 보안 토큰 (헤더 필수)
+    auth_token = "25f58d6aa83f41de4c281e304227f63a864766e0bac8ea0c03d1fb80b1ff59d6"
+    
+    # 2. [수정] 주소를 직접 조립(f-string)하던 로직을 삭제합니다.
+    # 은서님이 준 callback_url이 이미 완성형이므로 그대로 사용합니다.
+    final_url = callback_url 
 
-def send_to_callback(callback_url: str, user_id: str, result: dict):
-    """최종 규격에 맞춰 백엔드로 전송"""
-    # run 함수가 이미 'data'에 필요한 필드를 채워서 줍니다.
-    item = result.get("data") 
-    if not item: return
+    headers = {
+        "Content-Type": "application/json",
+        "X-AI-CALLBACK-TOKEN": auth_token 
+    }
 
     payload = {
         "status": "SUCCESS",
         "relevanceScore": result.get("relevanceScore", 0.0),
-        "data": item # 이미 category, title, summary, originalUrl 등이 들어있음
+        "data": result.get("data")
     }
 
     try:
-        requests.post(callback_url, json=payload, timeout=30)
-        print("🚀 [Callback] 전송 완료")
+        # 가공하지 않은 final_url로 바로 쏩니다.
+        response = requests.post(
+            final_url, 
+            json=payload, 
+            headers=headers, 
+            timeout=30
+        )
+        print(f"📡 은서님 서버 응답 코드: {response.status_code}") # 👈 이거 추가
+        print(f"📄 은서님 서버 응답 내용: {response.text}") # 👈 이것도 추가
+        print(f"🚀 [Callback] 전송 완료!!: {final_url}")
     except Exception as e:
         print(f"❌ [Callback] 실패: {e}")
 if __name__ == "__main__":
