@@ -63,7 +63,6 @@ async def handle_crawl(request_data: BatchRequest):
             # run 함수는 이미 'data' 안에 dict를 담아 보내주므로 그대로 전달하거나 가공
             send_to_callback(
                 data_dict["callback"]["callbackUrl"],
-                data_dict["userId"],
                 result
             )
             
@@ -72,34 +71,36 @@ async def handle_crawl(request_data: BatchRequest):
     except Exception as e:
         print(f"💥 상세 에러: {str(e)}")
         return {"status": "ERROR", "message": str(e)}
+def send_to_callback(callback_url: str, result: dict):
+    # 1. 은서님이 주신 보안 토큰 (헤더 필수)
+    auth_token = "25f58d6aa83f41de4c281e304227f63a864766e0bac8ea0c03d1fb80b1ff59d6"
+    
+    # 2. [수정] 주소를 직접 조립(f-string)하던 로직을 삭제합니다.
+    # 은서님이 준 callback_url이 이미 완성형이므로 그대로 사용합니다.
+    final_url = callback_url 
 
-def send_to_callback(callback_url: str, result: dict, auth_token: str):
-    """
-    백엔드가 이미 {requestId}를 포함해 완성해서 준 callback_url을 
-    수정 없이 그대로 사용하여 결과를 전송합니다.
-    """
-    # 1. 페이로드 구성 (백엔드 수신 규격)
+    headers = {
+        "Content-Type": "application/json",
+        "X-AI-CALLBACK-TOKEN": auth_token 
+    }
+
     payload = {
         "status": "SUCCESS",
         "relevanceScore": result.get("relevanceScore", 0.0),
         "data": result.get("data")
     }
 
-    # 2. 헤더 구성 (authToken이 있다면 함께 전송)
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {auth_token}" # 보안을 위해 토큰 추가
-    }
-
     try:
-        # 가공하지 않은 callback_url 그대로 POST!
+        # 가공하지 않은 final_url로 바로 쏩니다.
         response = requests.post(
-            callback_url, 
+            final_url, 
             json=payload, 
             headers=headers, 
             timeout=30
         )
-        print(f"🚀 [Callback] 전송 완료: {callback_url} (Status: {response.status_code})")
+        print(f"📡 은서님 서버 응답 코드: {response.status_code}") # 👈 이거 추가
+        print(f"📄 은서님 서버 응답 내용: {response.text}") # 👈 이것도 추가
+        print(f"🚀 [Callback] 전송 완료!!: {final_url}")
     except Exception as e:
         print(f"❌ [Callback] 실패: {e}")
 if __name__ == "__main__":
