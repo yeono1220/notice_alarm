@@ -70,17 +70,15 @@ else:
 # app/jobs/korea_university.py
 def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     """
-    최종 진입점: main.py로부터 JSON을 받아 전 프로세스를 제어합니다.
+    최종 진입점: 적합 판정된 '모든' 공지를 리스트 형태로 반환합니다.
     """
-    LOG.info("📥 [데이터 수신] 크롤링 프로세스 시작")
+    LOG.info("📥 [데이터 수신] 다중 크롤링 프로세스 시작")
     
-    # 1. 인풋 데이터 파싱 및 프로필 생성
+    # 1. 인풋 데이터 파싱
     user_profile = event.get("userProfile", {})
     major = user_profile.get("major", "")
     interests = ", ".join(user_profile.get("interestFields", []))
     combined_profile = f"전공: {major}, 관심분야: {interests}"
-    
-    # [에러 해결] 사용자가 보낸 intervalDays를 가져와서 하위 함수에 전달 준비
     interval = user_profile.get("intervalDays", 3)
     
     target_url = event.get("targetUrl") or BASE_URL_DEFAULT
@@ -96,71 +94,66 @@ def run(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     total_scanned_count = 0 
     aligned_total = []
 
-    # --- [통합] process_board 함수 없이 여기서 직접 루프를 돕니다 ---
+    # 각 게시판 순회하며 데이터 수집
     for board in target_boards:
         try:
             LOG.info(f"🔎 {board['name']} 게시판 분석 시작...")
-            
-            # [Step 1] 게시판 목록 가져오기
             page_url, html = fetch_board(base_url, board)
-            
-            # [Step 2] 1차 크롤링: 날짜 필터링 적용 (인자 3개 정상 전달)
-            # 이제 parse_posts(html, page_url, interval) 형태로 호출됩니다.
             posts = parse_posts(html, page_url, interval) 
-            LOG.info(f"수집된 포스트 타입: {type(posts)}") # 로그로 확인용
-
-            # evaluate_posts 호출 시 posts 리스트를 정확히 전달
+            
+            # AI 평가 (관심사에 맞는 글들 필터링)
             aligned, _ = evaluate_posts(combined_profile, board["name"], posts)
             total_scanned_count += len(posts)
-            
-            # [Step 3] AI 평가 및 상세 크롤링
             aligned_total.extend(aligned)
-            
             
         except Exception as exc:
             LOG.error(f"❌ {board['name']} 처리 중 오류: {exc}")
             continue
 
-    # 2. 상태 세분화 및 결과 조립
+    # 2. 결과 처리 (상태값 세분화)
     if total_scanned_count == 0:
         return {
             "status": "NO_NEW_POSTS",
-            "relevanceScore": 0.0,
-            "data": None,
+            "data": [], # 빈 리스트 반환
             "message": f"최근 {interval}일 동안 새로운 공지가 없습니다."
         }
             
     if not aligned_total:
         return {
             "status": "NO_MATCHING_POSTS",
-            "relevanceScore": 0.0,
-            "data": None,
+            "data": [], # 빈 리스트 반환
             "message": "신규 공지는 있으나 사용자의 관심사와 일치하는 항목이 없습니다."
         }
 
-    # 성공 시 점수 순 정렬 후 반환
+    # 3. [핵심 수정] 모든 적합 공지에 대해 요약 생성 및 리스트 빌드
+    # 점수 순 정렬 (높은 순)
     aligned_total.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
-    best_post = aligned_total[0]
-
-    # [수정 핵심] 상세 본문(1차+2차 크롤링 결과)을 바탕으로 최종 요약 생성
-    final_summary = summarize_content(
-        user_profile, 
-        best_post["title"], 
-        best_post.get("full_content", "")
-    )
     
+    final_data_list = []
+    for post in aligned_total:
+        LOG.info(f"📝 요약 생성 중: {post['title']}")
+        summary = summarize_content(
+            user_profile, 
+            post["title"], 
+            post.get("full_content", "")
+        )
+        
+        final_data_list.append({
+            "category": "공지사항",
+            "title": post["title"],
+            "sourceName": "고려대학교 정보대학",
+            "summary": summary,
+            "originalUrl": post["link"],
+            "relevanceScore": post.get("relevance_score", 0.0),
+            "timestamp": datetime.now(TIMEZONE).isoformat()
+        })
+    
+    # 최종 결과 반환 (data가 이제 List입니다)
     return {
         "status": "SUCCESS",
-        "relevanceScore": best_post.get("relevance_score", 0.0),
-        "data": {
-            "category": "공지사항",
-            "title": best_post["title"],
-            "sourceName": "고려대학교 정보대학",
-            "summary": final_summary,  # 분석 사유 대신 실제 요약문 삽입
-            "originalUrl": best_post["link"],
-            "timestamp": datetime.now(TIMEZONE).isoformat()
-        }
-    }# 입력받은 URL을 크롤링하기 적합한 표준형태로 변환
+        "count": len(final_data_list),
+        "data": final_data_list # [변경] 단일 dict -> List[dict]
+    }
 def normalize_base(url: str | None) -> str: 
     if not url:
         return BASE_URL_DEFAULT

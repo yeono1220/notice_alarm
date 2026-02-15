@@ -32,77 +32,86 @@ class CallbackConfig(BaseModel):
 
 class BatchRequest(BaseModel):
     userId: str
-    targetUrl: str
+    targetUrls: List[str]  # [수정] 단일 targetUrl -> 리스트 targetUrls
     userProfile: UserProfile
-    summary: str
     callback: CallbackConfig
+
+@app.post("/crawl/request")
 @app.post("/crawl/request")
 async def handle_crawl(request_data: BatchRequest):
     try:
         data_dict = request_data.model_dump()
-        
-        # [핵심] run 함수가 event.get("userProfile")을 사용하므로 키 이름을 맞춰줍니다.
-        event = {
-            "userId": data_dict["userId"],
-            "targetUrl": data_dict["targetUrl"],
-            "userProfile": data_dict["userProfile"], # 'profile'이 아니라 'userProfile'로 전달
-            "callbackUrl": data_dict["callback"]["callbackUrl"]
-        }
-        
-        print(f"DEBUG: Passing event to run: {event}")
-        result = run(event)
-        
-        # [방어 코드] result가 None이거나 실패한 경우 처리
-        if not result or result.get("status") != "SUCCESS":
-            msg = result.get("message") if result else "결과 없음"
-            print(f"⚠️ 크롤러 응답 미흡: {msg}")
-            return {"status": "SKIPPED", "message": msg}
+        all_results = []
 
-        # [데이터 전송] run 함수의 리턴 구조(단일 dict)에 맞춰 callback 실행
-        if data_dict["callback"]["enabled"]:
-            # run 함수는 이미 'data' 안에 dict를 담아 보내주므로 그대로 전달하거나 가공
-            send_to_callback(
+        for url in data_dict["targetUrls"]:
+            event = {
+                "userId": data_dict["userId"],
+                "targetUrl": url,
+                "userProfile": data_dict["userProfile"],
+                "callbackUrl": data_dict["callback"]["callbackUrl"]
+            }
+            
+            # 2차 크롤링 실행
+            response_json = run(event) 
+            
+            # [수정된 로직]
+            if isinstance(response_json, dict):
+                # 'data' 키에 들어있는 실제 공지 리스트를 가져옴
+                site_notices = response_json.get("data", [])
+                if isinstance(site_notices, list):
+                    all_results.extend(site_notices)
+                else:
+                    # 혹시나 data 자체가 단일 객체일 경우를 대비
+                    all_results.append(site_notices)
+            elif isinstance(response_json, list):
+                all_results.extend(response_json)
+
+        # 결과 전송
+        if data_dict["callback"]["enabled"] and all_results:
+            send_to_callback_list(
                 data_dict["callback"]["callbackUrl"],
-                result
+                all_results
             )
             
-        return {"status": "SUCCESS", "message": "프로세스 완료"}
-        
+        return {"status": "SUCCESS", "count": len(all_results), "data": all_results}
     except Exception as e:
-        print(f"💥 상세 에러: {str(e)}")
         return {"status": "ERROR", "message": str(e)}
-def send_to_callback(callback_url: str, result: dict):
-    # 1. 은서님이 주신 보안 토큰 (헤더 필수)
+def send_to_callback_list(callback_url: str, results: List[dict]):
+    # 1. 은서님 보안 토큰
     auth_token = "25f58d6aa83f41de4c281e304227f63a864766e0bac8ea0c03d1fb80b1ff59d6"
     
-    # 2. [수정] 주소를 직접 조립(f-string)하던 로직을 삭제합니다.
-    # 은서님이 준 callback_url이 이미 완성형이므로 그대로 사용합니다.
-    final_url = callback_url 
+    # 2. [이미지 7번 핵심] 전체 결과의 대표 relevanceScore 계산
+    # 공지마다 점수가 있을 텐데, 그 중 가장 높은 점수를 바깥 대표 점수로 뽑습니다.
+    global_relevance_score = 0.0
+    if results:
+        # 각 공지 객체 내부의 relevanceScore 필드를 찾아 최댓값 추출
+        scores = [float(r.get("relevanceScore", 0.0)) for r in results if isinstance(r, dict)]
+        global_relevance_score = max(scores) if scores else 0.87 # 없으면 기본값
 
     headers = {
         "Content-Type": "application/json",
         "X-AI-CALLBACK-TOKEN": auth_token 
     }
 
+    # [이미지 7번 그대로] 최상단에 status, relevanceScore, data 리스트 배치
     payload = {
         "status": "SUCCESS",
-        "relevanceScore": result.get("relevanceScore", 0.0),
-        "data": result.get("data")
+        "relevanceScore": round(global_relevance_score, 2),
+        "data": results  # 여기에 공지 객체 리스트가 들어감
     }
 
     try:
-        # 가공하지 않은 final_url로 바로 쏩니다.
         response = requests.post(
-            final_url, 
+            callback_url, 
             json=payload, 
             headers=headers, 
             timeout=30
         )
-        print(f"📡 은서님 서버 응답 코드: {response.status_code}") # 👈 이거 추가
-        print(f"📄 은서님 서버 응답 내용: {response.text}") # 👈 이것도 추가
-        print(f"🚀 [Callback] 전송 완료!!: {final_url}")
+        print(f"📡 은서님 서버 응답 코드: {response.status_code}")
+        print(f"🚀 [Callback] 이미지 7번 규격 전송 완료!!")
     except Exception as e:
-        print(f"❌ [Callback] 실패: {e}")
+        print(f"❌ [Callback] 전송 에러: {e}")
+        
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info")
